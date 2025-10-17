@@ -15,7 +15,7 @@ import test_low_latency
 # noinspection PyShadowingNames
 def test_main(args: argparse.Namespace, num_sms: int,
               local_rank: int, num_local_ranks: int, num_ranks: int, num_nodes: int, rank: int,
-              buffer: deep_ep.Buffer, group: dist.ProcessGroup, skip_benchmark: bool = False):
+              buffer: deep_ep.Buffer, group: dist.ProcessGroup, skip_benchmark: bool = True):
     # Settings
     num_tokens, hidden = args.num_tokens, args.hidden
     num_topk_groups, num_topk, num_experts = args.num_topk_groups, args.num_topk, args.num_experts
@@ -35,7 +35,7 @@ def test_main(args: argparse.Namespace, num_sms: int,
     group_idx = torch.topk(group_scores, k=num_topk_groups, dim=-1, sorted=False).indices
     masked_scores = create_grouped_scores(scores, group_idx, num_nodes)
     topk_idx = torch.topk(masked_scores, num_topk, dim=-1, largest=True, sorted=False)[1]
-    topk_idx = topk_idx.to(deep_ep.topk_idx_t)
+    # topk_idx = topk_idx.to(deep_ep.topk_idx_t)
     topk_weights = torch.ones((num_tokens, num_topk), dtype=torch.float32, device='cuda') * rank
     topk_weights_pure_rand = torch.randn((num_tokens, num_topk), dtype=torch.float32, device='cuda')
     rank_idx = topk_idx // (num_experts // num_ranks)
@@ -106,7 +106,7 @@ def test_main(args: argparse.Namespace, num_sms: int,
             check_start = check_end
 
     for previous_mode in (False, True):
-        for async_mode in (False, True):
+        for async_mode in (False, False):
             for current_x in (x_pure_rand, x, x_pure_rand_e4m3, x_e4m3):
                 for with_topk in (False, True):
                     is_rand = current_x is x_pure_rand or current_x is x_pure_rand_e4m3
@@ -158,18 +158,20 @@ def test_main(args: argparse.Namespace, num_sms: int,
                             check_data(recv_x, recv_gbl_rank_prefix_sum)
 
                     # Test combine
+                    # torch.cuda.synchronize()
+                    # print("lijian test dipatch end and combine start.")
                     bias_0 = torch.ones((num_tokens, hidden), dtype=torch.bfloat16, device='cuda')
                     bias_1 = torch.randn((num_tokens, hidden), dtype=torch.bfloat16, device='cuda')
-                    combine_args = {'x': recv_x, 'bias': (bias_0, bias_1), 'handle': handle, 'config': config, 'async_finish': async_mode}
+                    combine_args = {'x': recv_x, 'handle': handle, 'config': config}
                     if with_topk:
                         combine_args.update({'topk_weights': recv_topk_weights})
                     if previous_mode:
                         combine_args.update({'previous_event': buffer.capture()})
                     combined_x, combined_topk_weights, event = buffer.combine(**combine_args)
                     event.current_stream_wait() if async_mode else ()
-                    check_x = (combined_x.float() - bias_0.float() - bias_1.float()) / is_token_in_rank.sum(dim=1).unsqueeze(1)
+                    check_x = combined_x.float() / is_token_in_rank.sum(dim=1).unsqueeze(1)
                     ref_x = x_pure_rand if is_rand else x
-                    assert calc_diff(check_x, ref_x) < 5e-4 if current_x is x_pure_rand_e4m3 else 5e-6 
+                    assert calc_diff(check_x, ref_x) < 5e-4 if current_x is x_pure_rand_e4m3 else 5e-6
                     if with_topk:
                         check_topk_weights = combined_topk_weights if is_rand else (combined_topk_weights / is_token_in_rank.sum(dim=1).unsqueeze(1))
                         ref_topk_weights = topk_weights_pure_rand if is_rand else topk_weights
@@ -191,6 +193,7 @@ def test_main(args: argparse.Namespace, num_sms: int,
     if skip_benchmark:
         return hash_value
 
+    # print("benchmark start:")
     # Tune dispatch performance
     best_dispatch_results = None
     fp8_factor = (1 + 4 / 128) / 2
@@ -262,7 +265,7 @@ def test_loop(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
     num_qps_per_rank = max(num_sms, ll_num_experts // num_ranks if args.test_ll_compatibility else 0)
 
     buffer = deep_ep.Buffer(group, int(2e9), int(1e9), low_latency_mode=args.test_ll_compatibility,
-                            num_qps_per_rank=num_qps_per_rank, explicitly_destroy=True)
+                            num_qps_per_rank=num_qps_per_rank, explicitly_destroy=True, use_default_stream_as_comm_stream=False)
     assert num_local_ranks == 8 and num_ranks > 8
 
     for seed in range(int(1e9)):

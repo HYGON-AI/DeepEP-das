@@ -24,9 +24,9 @@ public:
 #ifndef CUDA_CHECK
 #define CUDA_CHECK(cmd) \
 do { \
-    cudaError_t e = (cmd); \
-    if (e != cudaSuccess) { \
-        throw EPException("CUDA", __FILE__, __LINE__, cudaGetErrorString(e)); \
+    hipError_t e = (cmd); \
+    if (e != hipSuccess) { \
+        throw EPException("CUDA", __FILE__, __LINE__, hipGetErrorString(e)); \
     } \
 } while (0)
 #endif
@@ -45,7 +45,7 @@ do { \
 do { \
     if (not (cond)) { \
         printf("Assertion failed: %s:%d, condition: %s\n", __FILE__, __LINE__, #cond); \
-        asm("trap;"); \
+        __builtin_trap(); \
     } \
 } while (0)
 #endif
