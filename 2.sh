@@ -11,4 +11,3 @@ export HIP_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 export ROCSHMEM_HEAP_SIZE=10737418240
 export PYTHONPATH=${DEEPEP_ROOT:-\$(pwd)}:$PYTHONPATH
 torchrun --nproc-per-node=1 --nnodes=2 --node-rank=1 --master-addr="${MASTER_ADDR:-127.0.0.1}" --master-port=1234 tests/test_internode.py
-# torchrun --nproc-per-node=1 --nnodes=2 --node-rank=1 --master-addr="${MASTER_ADDR:-127.0.0.1}" --master-port=1234 tests/internode_lj.py

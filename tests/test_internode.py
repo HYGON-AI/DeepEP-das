@@ -162,7 +162,7 @@ def test_main(args: argparse.Namespace, num_sms: int,
                     # print("lijian test dipatch end and combine start.")
                     bias_0 = torch.ones((num_tokens, hidden), dtype=torch.bfloat16, device='cuda')
                     bias_1 = torch.randn((num_tokens, hidden), dtype=torch.bfloat16, device='cuda')
-                    combine_args = {'x': recv_x, 'handle': handle, 'config': config}
+                    combine_args = {'x': recv_x, 'handle': handle, 'config': config, 'async_finish': async_mode}
                     if with_topk:
                         combine_args.update({'topk_weights': recv_topk_weights})
                     if previous_mode:
