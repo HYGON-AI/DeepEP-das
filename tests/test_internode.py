@@ -106,7 +106,7 @@ def test_main(args: argparse.Namespace, num_sms: int,
             check_start = check_end
 
     for previous_mode in (False, True):
-        for async_mode in (False, False):
+        for async_mode in (False, True):
             for current_x in (x_pure_rand, x, x_pure_rand_e4m3, x_e4m3):
                 for with_topk in (False, True):
                     is_rand = current_x is x_pure_rand or current_x is x_pure_rand_e4m3
@@ -261,7 +261,7 @@ def test_loop(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
     if args.test_ll_compatibility:
         ll_num_tokens, ll_hidden, ll_num_experts, ll_num_topk = 16, 5120, 256, 9
 
-    num_sms = 24
+    num_sms = 30
     num_qps_per_rank = max(num_sms, ll_num_experts // num_ranks if args.test_ll_compatibility else 0)
 
     buffer = deep_ep.Buffer(group, int(2e9), int(1e9), low_latency_mode=args.test_ll_compatibility,
