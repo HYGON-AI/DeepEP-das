@@ -1,3 +1,4 @@
+// #include <ATen/dtk_macros.h>
 #include <ATen/hip/HIPContext.h>
 #include <ATen/hip/HIPDataType.h>
 #include <chrono>
@@ -5,8 +6,8 @@
 #include <pybind11/functional.h>
 #include <torch/python.h>
 
-#include "./kernels/api.cuh"
-#include "./kernels/configs.cuh"
+#include "kernels/api.cuh"
+#include "kernels/configs.cuh"
 #include "deep_ep.hpp"
 
 namespace deep_ep {
@@ -40,8 +41,8 @@ Buffer::Buffer(int rank, int num_ranks, int64_t num_nvl_bytes, int64_t num_rdma_
     // Get ranks
     CUDA_CHECK(hipGetDevice(&device_id));
     rdma_rank = rank / NUM_MAX_NVL_PEERS, nvl_rank = rank % NUM_MAX_NVL_PEERS;
-    num_rdma_ranks = std::max(1, num_ranks / NUM_MAX_NVL_PEERS),
-    num_nvl_ranks  = std::min(num_ranks, NUM_MAX_NVL_PEERS);
+    num_rdma_ranks = ::max(1, num_ranks / NUM_MAX_NVL_PEERS),
+    num_nvl_ranks  = ::min(num_ranks, NUM_MAX_NVL_PEERS);
 
 #ifdef DISABLE_ROCSHMEM
     EP_HOST_ASSERT(num_rdma_ranks == 1 and not low_latency_mode and
@@ -803,8 +804,8 @@ Buffer::internode_dispatch(const torch::Tensor &x, const std::optional<torch::Te
     // here.
     pybind11::gil_scoped_release release;
 
-    const int num_channels = config.num_sms / 2;
-    EP_HOST_ASSERT(config.num_sms % 2 == 0);
+    const int num_channels = config.num_sms / 3;
+    EP_HOST_ASSERT(config.num_sms % 3 == 0);
     EP_HOST_ASSERT(0 < get_num_rdma_ranks() and get_num_rdma_ranks() <= NUM_MAX_RDMA_PEERS);
 
     bool cached_mode = cached_rdma_channel_prefix_matrix.has_value();
@@ -901,10 +902,10 @@ Buffer::internode_dispatch(const torch::Tensor &x, const std::optional<torch::Te
 
     // Allocate all tensors on comm stream if set
     // NOTES: do not allocate tensors upfront!
-    auto compute_stream = at::cuda::getCurrentCUDAStream();
+    auto compute_stream = at::hip::getCurrentHIPStreamMasqueradingAsCUDA();
     if (allocate_on_comm_stream) {
         EP_HOST_ASSERT(previous_event.has_value() and async);
-        at::cuda::setCurrentCUDAStream(comm_stream);
+        at::hip::setCurrentHIPStreamMasqueradingAsCUDA(comm_stream);
     }
 
     // Wait previous tasks to be finished
@@ -1088,7 +1089,7 @@ Buffer::internode_dispatch(const torch::Tensor &x, const std::optional<torch::Te
 
     // Switch back compute stream
     if (allocate_on_comm_stream)
-        at::cuda::setCurrentCUDAStream(compute_stream);
+        at::hip::setCurrentHIPStreamMasqueradingAsCUDA(compute_stream);
 
     // Return values
     return {recv_x,
@@ -1124,8 +1125,8 @@ Buffer::internode_combine(
     const torch::Tensor &combined_nvl_head, const Config &config,
     std::optional<EventHandle> &previous_event, bool async, bool allocate_on_comm_stream) {
 #ifndef DISABLE_ROCSHMEM
-    const int num_channels = config.num_sms / 2;
-    EP_HOST_ASSERT(config.num_sms % 2 == 0);
+    const int num_channels = config.num_sms / 3;
+    EP_HOST_ASSERT(config.num_sms % 3 == 0);
 
     // Shape and contiguous checks
     EP_HOST_ASSERT(x.dim() == 2 and x.is_contiguous());
@@ -1167,10 +1168,10 @@ Buffer::internode_combine(
 
     // Allocate all tensors on comm stream if set
     // NOTES: do not allocate tensors upfront!
-    auto compute_stream = at::cuda::getCurrentCUDAStream();
+    auto compute_stream = at::hip::getCurrentHIPStreamMasqueradingAsCUDA();
     if (allocate_on_comm_stream) {
         EP_HOST_ASSERT(previous_event.has_value() and async);
-        at::cuda::setCurrentCUDAStream(comm_stream);
+        at::hip::setCurrentHIPStreamMasqueradingAsCUDA(comm_stream);
     }
 
     // Wait previous tasks to be finished
@@ -1216,7 +1217,7 @@ Buffer::internode_combine(
     void *bias_ptrs[2] = {nullptr, nullptr};
     for (int i = 0; i < 2; ++i)
         if (bias_opts[i].has_value()) {
-            // EP_HOST_ASSERT(false and "bias is not supported in internode combine");
+            EP_HOST_ASSERT(false and "bias is not supported in internode combine");
             auto bias = bias_opts[i].value();
             EP_HOST_ASSERT(bias.dim() == 2 and bias.is_contiguous());
             EP_HOST_ASSERT(bias.scalar_type() == x.scalar_type());
@@ -1260,7 +1261,7 @@ Buffer::internode_combine(
 
     // Switch back compute stream
     if (allocate_on_comm_stream)
-        at::cuda::setCurrentCUDAStream(compute_stream);
+        at::hip::setCurrentHIPStreamMasqueradingAsCUDA(compute_stream);
 
     // Return values
     return {combined_x, combined_topk_weights, event};

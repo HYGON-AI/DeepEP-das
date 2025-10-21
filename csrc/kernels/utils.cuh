@@ -1,3 +1,4 @@
+#include "hip/hip_runtime.h"
 #pragma once
 #include "configs.cuh"
 #include "exception.cuh"
@@ -194,8 +195,7 @@ __device__ __forceinline__ int64_t ld_volatile_global(const volatile uint64_t *p
     return ret;
 }
 
-template <typename dtype_t> 
-__device__ __forceinline__ dtype_t ld_nc_global(const dtype_t *ptr) {
+template <typename dtype_t> __device__ __forceinline__ dtype_t ld_nc_global(const dtype_t *ptr) {
     using T  = typename VecInt<sizeof(dtype_t)>::vec_t;
     auto ret = __builtin_nontemporal_load(reinterpret_cast<const T *>(ptr));
     return *reinterpret_cast<dtype_t *>(&ret);

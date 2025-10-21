@@ -6,7 +6,7 @@
 #include <tuple>
 #include <vector>
 
-#include "./kernels/configs.cuh"
+#include "kernels/configs.cuh"
 #include "kernels/exception.cuh"
 #include "config.hpp"
 #include "event.hpp"
