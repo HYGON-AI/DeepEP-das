@@ -193,7 +193,6 @@ def test_main(args: argparse.Namespace, num_sms: int,
     if skip_benchmark:
         return hash_value
 
-    # print("benchmark start:")
     # Tune dispatch performance
     best_dispatch_results = None
     fp8_factor = (1 + 4 / 128) / 2
@@ -253,6 +252,10 @@ def test_main(args: argparse.Namespace, num_sms: int,
         print('', flush=True)
     return hash_value
 
+def get_hidden_bytes(args: argparse.Namespace) -> int:
+    x = torch.ones((args.num_tokens, args.hidden), dtype=torch.bfloat16)
+    t = x[0] if isinstance(x, tuple) else x
+    return t.size(1) * max(t.element_size(), 2)
 
 # noinspection PyUnboundLocalVariable,PyShadowingNames
 def test_loop(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
@@ -261,10 +264,16 @@ def test_loop(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
     if args.test_ll_compatibility:
         ll_num_tokens, ll_hidden, ll_num_experts, ll_num_topk = 16, 5120, 256, 9
 
-    num_sms = 30
+    num_sms = 24
     num_qps_per_rank = max(num_sms, ll_num_experts // num_ranks if args.test_ll_compatibility else 0)
 
-    buffer = deep_ep.Buffer(group, int(2e9), int(1e9), low_latency_mode=args.test_ll_compatibility,
+    hidden_bytes = get_hidden_bytes(args)
+    num_nvl_bytes, num_rdma_bytes = 0, 0
+    for config in (deep_ep.Buffer.get_dispatch_config(group.size()), deep_ep.Buffer.get_combine_config(group.size())):
+        num_nvl_bytes = max(config.get_nvl_buffer_size_hint(hidden_bytes, group.size()), num_nvl_bytes)
+        num_rdma_bytes = max(config.get_rdma_buffer_size_hint(hidden_bytes, group.size()), num_rdma_bytes)
+
+    buffer = deep_ep.Buffer(group, num_nvl_bytes, num_rdma_bytes, low_latency_mode=args.test_ll_compatibility,
                             num_qps_per_rank=num_qps_per_rank, explicitly_destroy=True, use_default_stream_as_comm_stream=False)
     assert num_local_ranks == 8 and num_ranks > 8
 
