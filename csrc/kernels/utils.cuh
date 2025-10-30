@@ -125,6 +125,10 @@ __device__ __forceinline__ void st_release_sys_global(const int *ptr, int val) {
     __hip_atomic_store(const_cast<int *>(ptr), val, __ATOMIC_RELEASE, __HIP_MEMORY_SCOPE_SYSTEM);
 }
 
+__device__ __forceinline__ void st_release_sys_global(const int64_t *ptr, int64_t val) {
+    __hip_atomic_store(const_cast<int64_t *>(ptr), val, __ATOMIC_RELEASE, __HIP_MEMORY_SCOPE_SYSTEM);
+}
+
 __device__ __forceinline__ void st_release_cta(const int *ptr, int val) {
     __hip_atomic_store(const_cast<int *>(ptr), val, __ATOMIC_RELEASE, __HIP_MEMORY_SCOPE_WORKGROUP);
 }
@@ -157,11 +161,23 @@ __device__ __forceinline__ int ld_acquire_global(const int *ptr) {
     return ret;
 }
 
+__device__ __forceinline__ int64_t ld_acquire_global(const int64_t *ptr) {
+    int64_t ret;
+    ret = __hip_atomic_load(ptr, __ATOMIC_ACQUIRE, __HIP_MEMORY_SCOPE_AGENT);
+    return ret;
+}
+
 __device__ __forceinline__ int atomic_add_release_global(const int *ptr, int value) {
     int ret;
     // ret = __hip_atomic_fetch_add(const_cast<int *>(ptr), value, __ATOMIC_RELEASE,
     //                              __HIP_MEMORY_SCOPE_AGENT);
     ret = atomicAdd((int*)ptr, value);
+    return ret;
+}
+
+__device__ __forceinline__ int ld_relaxed_global(const int *ptr) {
+    int ret;
+    ret = __hip_atomic_load(ptr, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT);
     return ret;
 }
 
@@ -245,6 +261,11 @@ __device__ __forceinline__ void st_na_release(const uint64_t *ptr, uint64_t val)
     __hip_atomic_store(non_const_ptr, val, __ATOMIC_RELEASE, __HIP_MEMORY_SCOPE_AGENT);
 }
 
+__device__ __forceinline__ void st_na_release(const int64_t *ptr, int64_t val) {
+    int64_t *non_const_ptr = const_cast<int64_t *>(ptr);
+    __hip_atomic_store(non_const_ptr, val, __ATOMIC_RELEASE, __HIP_MEMORY_SCOPE_AGENT);
+}
+
 // TODO:: apply "st.global.L1::no_allocate" in ROCM
 template <typename dtype_t>
 __device__ __forceinline__ void st_na_global(const dtype_t *ptr, const dtype_t &value) {
@@ -279,6 +300,22 @@ __forceinline__ __device__ void get_channel_task_range(int num_tokens, int num_s
     token_end_idx         = min(token_start_idx + num_tokens_per_sm, num_tokens);
 }
 
+template <typename dtype_a_t, typename dtype_b_t>
+__device__ __forceinline__ dtype_b_t pack2(const dtype_a_t& x, const dtype_a_t& y) {
+    EP_STATIC_ASSERT(sizeof(dtype_a_t) * 2 == sizeof(dtype_b_t), "Invalid dtypes");
+    dtype_b_t packed;
+    auto unpacked_ptr = reinterpret_cast<dtype_a_t*>(&packed);
+    unpacked_ptr[0] = x, unpacked_ptr[1] = y;
+    return packed;
+}
+
+template <typename dtype_a_t, typename dtype_b_t>
+__device__ __forceinline__ void unpack2(const dtype_b_t& packed, dtype_a_t& x, dtype_a_t& y) {
+    EP_STATIC_ASSERT(sizeof(dtype_a_t) * 2 == sizeof(dtype_b_t), "Invalid dtypes");
+    auto unpacked_ptr = reinterpret_cast<const dtype_a_t*>(&packed);
+    x = unpacked_ptr[0], y = unpacked_ptr[1];
+}
+
 template <typename dtype_t>
 __device__ __forceinline__ dtype_t broadcast(dtype_t &ptr, int src_lane_idx) {
     EP_STATIC_ASSERT(sizeof(dtype_t) % sizeof(int) == 0, "");
@@ -290,15 +327,47 @@ __device__ __forceinline__ dtype_t broadcast(dtype_t &ptr, int src_lane_idx) {
     return *reinterpret_cast<dtype_t *>(recv_int_values);
 }
 
-__forceinline__ __device__ int warp_reduce_sum(int value) {
-    if constexpr (kWarpSize == 64)
-        value += shfl_xor<int>(value, 32);
-    value += shfl_xor<int>(value, 16);
-    value += shfl_xor<int>(value, 8);
-    value += shfl_xor<int>(value, 4);
-    value += shfl_xor<int>(value, 2);
-    value += shfl_xor<int>(value, 1);
-    return value;
+#ifdef USE_ROCM
+constexpr float kFP8Margin = 1e-4;
+    constexpr float kFinfoAmaxE4M3 = 240.0f;
+    constexpr float kFinfoAmaxInvE4M3 = 1.0f / kFinfoAmaxE4M3;
+#else
+constexpr float kFP8Margin = 1e-4;
+constexpr float kFinfoAmaxE4M3 = 448.0f;
+constexpr float kFinfoAmaxInvE4M3 = 1.0f / kFinfoAmaxE4M3;
+#endif
+
+__forceinline__ __device__ float fast_pow2(int x) {
+    // We can ensure `-126 <= x and x <= 127`
+    uint32_t bits_x = (x + 127) << 23;
+    return *reinterpret_cast<float*>(&bits_x);
+}
+
+__forceinline__ __device__ int fast_log2_ceil(float x) {
+    auto bits_x = *reinterpret_cast<uint32_t*>(&x);
+    auto exp_x = (bits_x >> 23) & 0xff;
+    auto man_bits = bits_x & ((1 << 23) - 1);
+    return exp_x - 127 + (man_bits != 0);
+}
+
+__forceinline__ __device__ void calculate_fp8_scales(float amax, float& scale, float& scale_inv, bool round_scale) {
+    if (round_scale) {
+        auto exp_scale_inv = fast_log2_ceil(amax * kFinfoAmaxInvE4M3);
+        scale = fast_pow2(-exp_scale_inv);
+        scale_inv = fast_pow2(exp_scale_inv);
+    } else {
+        scale_inv = amax * kFinfoAmaxInvE4M3;
+        scale = kFinfoAmaxE4M3 / amax;
+    }
+}
+
+template <bool kIsUE8M0, typename out_dtype_t = std::conditional_t<kIsUE8M0, uint8_t, float>>
+__forceinline__ __device__ out_dtype_t extract_required_scale_format(float value) {
+    if constexpr (kIsUE8M0) {
+        return static_cast<uint8_t>((*reinterpret_cast<uint32_t*>(&value)) >> 23);
+    } else {
+        return value;
+    }
 }
 
 __forceinline__ __device__ int get_lane_id() {
@@ -340,4 +409,95 @@ __forceinline__ __device__ void barrier_block(int **barrier_signal_ptrs, int ran
     }
     __syncthreads();
 }
+
+// Operation functors
+template <typename T>
+struct ReduceSum {
+    __device__ T operator()(T a, T b) const { return a + b; }
+};
+template <typename T>
+struct ReduceMax {
+    __device__ T operator()(T a, T b) const { return a > b ? a : b; }
+};
+template <typename T>
+struct ReduceMin {
+    __device__ T operator()(T a, T b) const { return a < b ? a : b; }
+};
+template <typename T>
+struct ReduceAnd {
+    __device__ T operator()(T a, T b) const { return a & b; }
+};
+template <typename T>
+struct ReduceOr {
+    __device__ T operator()(T a, T b) const { return a | b; }
+};
+
+// Unified reduction function
+template <int kNumLanesPerGroup, bool kIntergroupReduce, typename T, typename Op>
+__forceinline__ __device__ T warp_reduce(T value, Op op) {
+    EP_STATIC_ASSERT(kNumLanesPerGroup == kWarpSize or kNumLanesPerGroup == 32 or
+                     kNumLanesPerGroup == 16 or kNumLanesPerGroup == 8 or kNumLanesPerGroup == 4 or
+                     kNumLanesPerGroup == 2 or kNumLanesPerGroup == 1,
+                     "Invalid number of lanes");
+    constexpr uint32_t mask = 0xffffffff;
+    if constexpr (kIntergroupReduce) {
+        if constexpr (kNumLanesPerGroup <= 1)
+        value = op(value, shfl_xor(value, 1));
+        if constexpr (kNumLanesPerGroup <= 2)
+        value = op(value, shfl_xor(value, 2));
+        if constexpr (kNumLanesPerGroup <= 4)
+        value = op(value, shfl_xor(value, 4));
+        if constexpr (kNumLanesPerGroup <= 8)
+        value = op(value, shfl_xor(value, 8));
+        if constexpr (kNumLanesPerGroup <= 16)
+        value = op(value, shfl_xor(value, 16));
+        if constexpr(kWarpSize == 64){
+            if constexpr (kNumLanesPerGroup <= 32)
+            value = op(value, shfl_xor(value, 32));
+        }
+    } else {
+        if constexpr(kWarpSize == 64){
+            if constexpr (kNumLanesPerGroup >= kWarpSize)
+            value = op(value, shfl_xor(value, 32));
+        }
+        if constexpr (kNumLanesPerGroup >= 32)
+        value = op(value, shfl_xor(value, 16));
+        if constexpr (kNumLanesPerGroup >= 16)
+        value = op(value, shfl_xor(value, 8));
+        if constexpr (kNumLanesPerGroup >= 8)
+        value = op(value, shfl_xor(value, 4));
+        if constexpr (kNumLanesPerGroup >= 4)
+        value = op(value, shfl_xor(value, 2));
+        if constexpr (kNumLanesPerGroup >= 2)
+        value = op(value, shfl_xor(value, 1));
+    }
+    return value;
+}
+
+// Convenience aliases
+template <int kNumLanesPerGroup = kWarpSize, bool kIntergroupReduce = false, typename T>
+__forceinline__ __device__ T warp_reduce_sum(T value) {
+    return warp_reduce<kNumLanesPerGroup, kIntergroupReduce, T>(value, ReduceSum<T>{});
+}
+
+template <int kNumLanesPerGroup = kWarpSize, bool kIntergroupReduce = false, typename T>
+__forceinline__ __device__ T warp_reduce_max(T value) {
+    return warp_reduce<kNumLanesPerGroup, kIntergroupReduce, T>(value, ReduceMax<T>{});
+}
+
+template <int kNumLanesPerGroup = kWarpSize, bool kIntergroupReduce = false, typename T>
+__forceinline__ __device__ T warp_reduce_min(T value) {
+    return warp_reduce<kNumLanesPerGroup, kIntergroupReduce, T>(value, ReduceMin<T>{});
+}
+
+template <int kNumLanesPerGroup = kWarpSize, bool kIntergroupReduce = false, typename T>
+__forceinline__ __device__ T warp_reduce_and(T value) {
+    return warp_reduce<kNumLanesPerGroup, kIntergroupReduce, T>(value, ReduceAnd<T>{});
+}
+
+template <int kNumLanesPerGroup = kWarpSize, bool kIntergroupReduce = false, typename T>
+__forceinline__ __device__ T warp_reduce_or(T value) {
+    return warp_reduce<kNumLanesPerGroup, kIntergroupReduce, T>(value, ReduceOr<T>{});
+}
+
 } // namespace deep_ep

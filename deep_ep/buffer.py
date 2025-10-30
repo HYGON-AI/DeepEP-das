@@ -39,7 +39,7 @@ class Buffer:
         allow_nvlink_for_low_latency_mode: bool = True,
         allow_mnnvl: bool = False,
         explicitly_destroy: bool = False,
-        use_default_stream_as_comm_stream: bool = True,
+        enable_shrink: bool = False,
     ) -> None:
         """
         Initialize the communication buffer.
@@ -59,6 +59,7 @@ class Buffer:
             explicitly_destroy: If this flag is set to True, you need to explicitly call `destroy()` to release resources;
                 otherwise, the resources will be released by the destructor.
                 Note: Releasing resources in the destructor may cause Python's exception handling process to hang.
+            enable_shrink: whether to enable shrink mode. The enable mode allocates a mask buffer to support masking ranks dynamically.
         """
         check_nvlink_connections(group)
 
@@ -70,6 +71,7 @@ class Buffer:
         self.num_rdma_bytes = num_rdma_bytes
         self.low_latency_mode = low_latency_mode
         self.explicitly_destroy = explicitly_destroy
+        self.enable_shrink = enable_shrink
         self.runtime = deep_ep_cpp.Buffer(
             self.rank,
             self.group_size,
@@ -77,7 +79,7 @@ class Buffer:
             num_rdma_bytes,
             low_latency_mode,
             explicitly_destroy,
-            use_default_stream_as_comm_stream,
+            enable_shrink
         )
 
         # Synchronize device IDs
@@ -989,3 +991,31 @@ class Buffer:
         return self.runtime.get_next_low_latency_combine_buffer(
             num_max_dispatch_tokens_per_rank, hidden, num_experts
         )
+
+    def low_latency_update_mask_buffer(self, rank_to_mask: int, mask: bool = False):
+        """
+        Mask (unmask) a rank during communication (dispatch, combine, and clean)
+
+        Arguments:
+            rank: the rank to mask (unmask).
+            mask: if True, will mask the rank (do not recvfrom/sendto the rank), otherwise will unmask the rank.
+
+        """
+        self.runtime.low_latency_update_mask_buffer(rank_to_mask, mask)
+
+    def low_latency_query_mask_buffer(self, mask_status: torch.Tensor):
+        """
+        Query the mask status of all ranks
+
+        Arguments:
+            mask_status: `[num_ranks]` with `torch.int`, the mask status of each rank. `1` means mask and `0` means unmasked.
+
+        """
+        self.runtime.low_latency_query_mask_buffer(mask_status)
+
+    def low_latency_clean_mask_buffer(self):
+        """
+        Clean the mask buffer
+
+        """
+        self.runtime.low_latency_clean_mask_buffer()

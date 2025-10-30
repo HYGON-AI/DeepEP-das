@@ -30,6 +30,11 @@ private:
     int64_t num_rdma_bytes;
     void   *rdma_buffer_ptr = nullptr;
 
+  // Shrink mode buffer
+  bool enable_shrink = false;
+  int* mask_buffer_ptr = nullptr;
+  int* sync_buffer_ptr = nullptr;
+
     // Device info and communication
     int               device_id;
     int               num_device_sms;
@@ -67,11 +72,9 @@ private:
     volatile int *moe_recv_rdma_counter        = nullptr;
     int          *moe_recv_rdma_counter_mapped = nullptr;
 
-    bool use_default_stream_as_comm_stream = false;
-
 public:
     Buffer(int rank, int num_ranks, int64_t num_nvl_bytes, int64_t num_rdma_bytes,
-           bool low_latency_mode, bool explicitly_destroy, bool use_default_stream_as_comm_stream);
+           bool low_latency_mode, bool explicitly_destroy, bool enable_shrink);
 
     ~Buffer() noexcept(false);
 
@@ -187,6 +190,12 @@ public:
 
     torch::Tensor get_next_low_latency_combine_buffer(int num_max_dispatch_tokens_per_rank,
                                                       int hidden, int num_experts) const;
+
+      void low_latency_update_mask_buffer(int rank_to_mask, bool mask);
+
+      void low_latency_query_mask_buffer(const torch::Tensor& mask_status);
+
+      void low_latency_clean_mask_buffer();
 };
 
 } // namespace deep_ep
