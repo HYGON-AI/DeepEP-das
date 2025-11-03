@@ -31,6 +31,21 @@
         }                                                                                          \
     }
 
+#define UNROLLED_WARP_COPY_LL(UNROLL_FACTOR, LANE_ID, N, DST, SRC, LD_FUNC, ST_FUNC)                                                        \
+    {                                                                                                                                       \
+        constexpr int kLoopStride = kWarpSize * (UNROLL_FACTOR);                                                                            \
+        typename std::remove_reference<decltype(LD_FUNC((SRC) + 0))>::type unrolled_values[(UNROLL_FACTOR)];                                \
+        auto __src = (SRC);                                                                                                                 \
+        auto __dst = (DST);                                                                                                                 \
+        for(int __i = (LANE_ID); __i < ((N) / kLoopStride) * kLoopStride; __i += kLoopStride) {                                             \
+            _Pragma("unroll") for(int __j = 0; __j < (UNROLL_FACTOR); ++__j) unrolled_values[__j] = LD_FUNC(__src + __i + __j * kWarpSize); \
+            _Pragma("unroll") for(int __j = 0; __j < (UNROLL_FACTOR); ++__j) ST_FUNC(__dst + __i + __j * kWarpSize, unrolled_values[__j]);  \
+        }                                                                                                                                   \
+        for(int __i = ((N) / kLoopStride) * kLoopStride + (LANE_ID); __i < (N); __i += kWarpSize)                                           \
+            ST_FUNC(__dst + __i, LD_FUNC(__src + __i));                                                                                     \
+    }
+
+
 #define UNROLLED_WARP_COPY_EMULATED(UNROLL_FACTOR, LANE_ID, N, DST, SRC, LD_FUNC, ST_FUNC)         \
     {                                                                                              \
         constexpr int kLoopStride = kEmulatedWarpSize * (UNROLL_FACTOR);                           \
@@ -329,8 +344,8 @@ __device__ __forceinline__ dtype_t broadcast(dtype_t &ptr, int src_lane_idx) {
 
 #ifdef USE_ROCM
 constexpr float kFP8Margin = 1e-4;
-    constexpr float kFinfoAmaxE4M3 = 240.0f;
-    constexpr float kFinfoAmaxInvE4M3 = 1.0f / kFinfoAmaxE4M3;
+constexpr float kFinfoAmaxE4M3 = 240.0f;
+constexpr float kFinfoAmaxInvE4M3 = 1.0f / kFinfoAmaxE4M3;
 #else
 constexpr float kFP8Margin = 1e-4;
 constexpr float kFinfoAmaxE4M3 = 448.0f;
@@ -350,8 +365,9 @@ __forceinline__ __device__ int fast_log2_ceil(float x) {
     return exp_x - 127 + (man_bits != 0);
 }
 
-__forceinline__ __device__ void calculate_fp8_scales(float amax, float& scale, float& scale_inv, bool round_scale) {
-    if (round_scale) {
+template <bool kRoundScale>
+__forceinline__ __device__ void calculate_fp8_scales(float amax, float& scale, float& scale_inv) {
+    if constexpr(kRoundScale) {
         auto exp_scale_inv = fast_log2_ceil(amax * kFinfoAmaxInvE4M3);
         scale = fast_pow2(-exp_scale_inv);
         scale_inv = fast_pow2(exp_scale_inv);

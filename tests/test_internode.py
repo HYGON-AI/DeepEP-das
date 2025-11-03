@@ -159,7 +159,6 @@ def test_main(args: argparse.Namespace, num_sms: int,
 
                     # Test combine
                     # torch.cuda.synchronize()
-                    # print("lijian test dipatch end and combine start.")
                     bias_0 = torch.ones((num_tokens, hidden), dtype=torch.bfloat16, device='cuda')
                     bias_1 = torch.randn((num_tokens, hidden), dtype=torch.bfloat16, device='cuda')
                     combine_args = {'x': recv_x, 'handle': handle, 'config': config, 'async_finish': async_mode}
@@ -264,7 +263,7 @@ def test_loop(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
     if args.test_ll_compatibility:
         ll_num_tokens, ll_hidden, ll_num_experts, ll_num_topk = 16, 5120, 256, 9
 
-    num_sms = 24
+    num_sms = 30
     num_qps_per_rank = max(num_sms, ll_num_experts // num_ranks if args.test_ll_compatibility else 0)
 
     hidden_bytes = get_hidden_bytes(args)
@@ -274,7 +273,7 @@ def test_loop(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
         num_rdma_bytes = max(config.get_rdma_buffer_size_hint(hidden_bytes, group.size()), num_rdma_bytes)
 
     buffer = deep_ep.Buffer(group, num_nvl_bytes, num_rdma_bytes, low_latency_mode=args.test_ll_compatibility,
-                            num_qps_per_rank=num_qps_per_rank, explicitly_destroy=True, use_default_stream_as_comm_stream=False)
+                            num_qps_per_rank=num_qps_per_rank, explicitly_destroy=True)
     assert num_local_ranks == 8 and num_ranks > 8
 
     for seed in range(int(1e9)):

@@ -45,3 +45,4 @@
 /* #undef GDA_IONIC */
 /* #undef GDA_BNXT */
 #define GDA_MLX5
+#define HAVE_EXTERNAL_MPI

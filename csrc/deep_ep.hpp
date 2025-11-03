@@ -26,14 +26,17 @@ private:
     void   *buffer_ptrs[NUM_MAX_NVL_PEERS] = {nullptr};
     void  **buffer_ptrs_gpu                = nullptr;
 
+    void* nvl_buffer_ptrs[NUM_MAX_NVL_PEERS] = {nullptr};
+    void** nvl_buffer_ptrs_gpu = nullptr;
+
     // NVSHMEM Buffer
     int64_t num_rdma_bytes;
     void   *rdma_buffer_ptr = nullptr;
 
-  // Shrink mode buffer
-  bool enable_shrink = false;
-  int* mask_buffer_ptr = nullptr;
-  int* sync_buffer_ptr = nullptr;
+    // Shrink mode buffer
+    bool enable_shrink = false;
+    int* mask_buffer_ptr = nullptr;
+    int* sync_buffer_ptr = nullptr;
 
     // Device info and communication
     int               device_id;
@@ -171,31 +174,19 @@ public:
     void clean_low_latency_buffer(int num_max_dispatch_tokens_per_rank, int hidden,
                                   int num_experts);
 
-    std::tuple<torch::Tensor, std::optional<torch::Tensor>, torch::Tensor, torch::Tensor,
-               torch::Tensor, std::optional<EventHandle>, std::optional<std::function<void()>>>
-    low_latency_dispatch(const torch::Tensor &x, const torch::Tensor &topk_idx,
-                         const std::optional<torch::Tensor> &cumulative_local_expert_recv_stats,
-                         const std::optional<torch::Tensor> &dispatch_wait_recv_cost_stats,
-                         int num_max_dispatch_tokens_per_rank, int num_experts, bool use_fp8,
-                         bool round_scale, bool use_ue8m0, bool async, bool return_recv_hook);
+    std::tuple<torch::Tensor, std::optional<torch::Tensor>, torch::Tensor, torch::Tensor, torch::Tensor, std::optional<EventHandle>, std::optional<std::function<void()>>>
+    low_latency_dispatch(const torch::Tensor& x, const torch::Tensor& topk_idx,
+                         int num_max_dispatch_tokens_per_rank, int num_experts,
+                         bool use_fp8, bool async, bool return_recv_hook);
 
     std::tuple<torch::Tensor, std::optional<EventHandle>, std::optional<std::function<void()>>>
-    low_latency_combine(const torch::Tensor &x, const torch::Tensor &topk_idx,
-                        const torch::Tensor &topk_weights, const torch::Tensor &src_info,
-                        const torch::Tensor                &layout_range,
-                        const std::optional<torch::Tensor> &combine_wait_recv_cost_stats,
-                        int num_max_dispatch_tokens_per_rank, int num_experts, bool use_logfmt,
+    low_latency_combine(const torch::Tensor& x, const torch::Tensor& topk_idx, const torch::Tensor& topk_weights,
+                        const torch::Tensor& src_info, const torch::Tensor& layout_range,
+                        int num_max_dispatch_tokens_per_rank, int num_experts,
                         bool zero_copy, bool async, bool return_recv_hook,
-                        const std::optional<torch::Tensor> &out = std::nullopt);
+                        const std::optional<torch::Tensor>& out = std::nullopt);
 
-    torch::Tensor get_next_low_latency_combine_buffer(int num_max_dispatch_tokens_per_rank,
-                                                      int hidden, int num_experts) const;
-
-      void low_latency_update_mask_buffer(int rank_to_mask, bool mask);
-
-      void low_latency_query_mask_buffer(const torch::Tensor& mask_status);
-
-      void low_latency_clean_mask_buffer();
+    torch::Tensor get_next_low_latency_combine_buffer(int num_max_dispatch_tokens_per_rank, int hidden, int num_experts);
 };
 
 } // namespace deep_ep

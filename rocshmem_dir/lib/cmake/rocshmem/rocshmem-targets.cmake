@@ -61,7 +61,7 @@ add_library(roc::rocshmem STATIC IMPORTED)
 set_target_properties(roc::rocshmem PROPERTIES
   INTERFACE_COMPILE_OPTIONS "-fgpu-rdc;-fgpu-rdc"
   INTERFACE_INCLUDE_DIRECTORIES "${_IMPORT_PREFIX}/include;${_IMPORT_PREFIX}/include"
-  INTERFACE_LINK_LIBRARIES "IBVerbs::verbs;numa;Threads::Threads;MPI::MPI_CXX;hip::device;hip::host;hsa-runtime64::hsa-runtime64;-fgpu-rdc"
+  INTERFACE_LINK_LIBRARIES "IBVerbs::verbs;numa;\$<\$<BOOL:ON>:MPI::MPI_CXX>;Threads::Threads;hip::device;hip::host;dl;hsa-runtime64::hsa-runtime64;-fgpu-rdc"
 )
 
 # Load information for each installed configuration.
