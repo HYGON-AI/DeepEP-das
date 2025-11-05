@@ -365,9 +365,8 @@ __forceinline__ __device__ int fast_log2_ceil(float x) {
     return exp_x - 127 + (man_bits != 0);
 }
 
-template <bool kRoundScale>
-__forceinline__ __device__ void calculate_fp8_scales(float amax, float& scale, float& scale_inv) {
-    if constexpr(kRoundScale) {
+__forceinline__ __device__ void calculate_fp8_scales(float amax, float& scale, float& scale_inv, bool round_scale) {
+    if (round_scale) {
         auto exp_scale_inv = fast_log2_ceil(amax * kFinfoAmaxInvE4M3);
         scale = fast_pow2(-exp_scale_inv);
         scale_inv = fast_pow2(exp_scale_inv);

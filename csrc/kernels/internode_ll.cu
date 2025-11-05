@@ -85,9 +85,9 @@ void clean_low_latency_buffer(int64_t* clean_0, int num_clean_int_0,
                   clean_0, num_clean_int_0, clean_1, num_clean_int_1);
 }
 
-template <bool kUseFP8, int kHidden>
+template <bool kUseFP8, bool kUseUE8M0, int kHidden>
 __global__ __launch_bounds__(16 * kWarpSize, 1) void
-dispatch(void* packed_recv_x, float* packed_recv_x_scales,
+dispatch(void* packed_recv_x, void* packed_recv_x_scales,
          int* packed_recv_src_info, int64_t* packed_recv_layout_range,
          int* packed_recv_count,
          int* global_atomic_counter,
@@ -97,7 +97,8 @@ dispatch(void* packed_recv_x, float* packed_recv_x_scales,
          int64_t* next_clean, int num_next_clean_int,
          int num_tokens, int num_max_dispatch_tokens_per_rank,
          int num_topk, int num_experts, int rank, int num_ranks,
-         int num_warp_groups, int num_warps_per_group, int phases) {
+         int num_warp_groups, int num_warps_per_group, 
+         bool round_scale, int phases) {
 #if !defined(ROCM_DISABLE_CTX)
     __shared__ rocshmem::rocshmem_ctx_t ctx;
     rocshmem::rocshmem_wg_ctx_create(0, &ctx);
@@ -112,6 +113,11 @@ dispatch(void* packed_recv_x, float* packed_recv_x_scales,
     const auto warp_group_id = warp_id / num_warps_per_group;
     const auto sub_warp_id = warp_id % num_warps_per_group;
     const auto responsible_expert_idx = sm_id * num_warp_groups + warp_group_id;
+
+    // May extract UE8M0 from the scales
+    using scale_t = std::conditional_t<kUseUE8M0, uint8_t, float>;
+    using packed_t = std::conditional_t<kUseUE8M0, uint32_t, float>;
+    EP_STATIC_ASSERT(sizeof(packed_t) % sizeof(scale_t) == 0, "Invalid vector length");
 
     // FP8 staffs
     constexpr int kNumPerChannels = FP8_QUANTIZATION_NUM_PER_CHANNEL;
@@ -184,9 +190,9 @@ dispatch(void* packed_recv_x, float* packed_recv_x_scales,
                     // Reduce amax and scale
                     EP_STATIC_ASSERT(kNumElemsPerRead * kWarpSize / kNumPerChannels == 4, "Invalid vectorization");
                     amax = warp_reduce_max<16>(amax);
-                    calculate_fp8_scales</*round_scale*/false>(amax, scale, scale_inv);
+                    calculate_fp8_scales(amax, scale, scale_inv, round_scale);
                     if (lane_id % 16 == 0)
-                        rdma_x_scales[i * kNumElemsPerRead / 128] = scale_inv;
+                        rdma_x_scales[i * kNumElemsPerRead / FP8_QUANTIZATION_NUM_PER_CHANNEL] = scale_inv;
 
                     // Cast into send buffer
                     vec_t int2_value;
@@ -316,9 +322,11 @@ LOW_LATENCY_DISPATCH_RECV:
                 src_rank * num_max_dispatch_tokens_per_rank * num_bytes_per_msg;
         const auto recv_x_int4 = reinterpret_cast<int4*>(packed_recv_x) +
                 local_expert_idx * num_ranks * num_max_dispatch_tokens_per_rank * hidden_int4;
-        const auto recv_x_scales = packed_recv_x_scales + local_expert_idx * num_ranks * num_max_dispatch_tokens_per_rank * num_scales;
         const auto recv_src_info = packed_recv_src_info + local_expert_idx * num_ranks * num_max_dispatch_tokens_per_rank;
         const auto recv_range = packed_recv_layout_range + local_expert_idx * num_ranks;
+        const auto num_aligned_scales = ALIGN<int>(num_scales, sizeof(float) / sizeof(scale_t));
+        const auto recv_x_scales = static_cast<scale_t*>(packed_recv_x_scales) +
+            local_expert_idx * num_ranks * num_max_dispatch_tokens_per_rank * num_aligned_scales;
 
         // Shared between sub-warps in warp groups
         __shared__ int shared_num_recv_tokens[kNumMaxWarpGroups], shared_recv_token_begin_idx[kNumMaxWarpGroups];
@@ -366,12 +374,23 @@ LOW_LATENCY_DISPATCH_RECV:
             // Copy scales
             if (kUseFP8) {
                 const auto src_scales = reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(src_data) + hidden_bytes);
-                const auto dst_scales = reinterpret_cast<float*>(recv_x_scales + recv_token_begin_idx + i);
-                const auto scale_stride = num_ranks * num_max_dispatch_tokens_per_rank;
-                auto scale_0 = lane_id < num_scales ? ld_nc_global(src_scales + lane_id) : 0;
-                auto scale_1 = (lane_id + kWarpSize) < num_scales ? ld_nc_global(src_scales + lane_id + kWarpSize) : 0;
-                lane_id < num_scales ? dst_scales[lane_id * scale_stride] = scale_0 : 0.0f;
-                (lane_id + kWarpSize) < num_scales ? dst_scales[(lane_id + kWarpSize) * scale_stride] = scale_1 : 0.0f;
+                const auto num_elems_per_pack = static_cast<int>(sizeof(packed_t) / sizeof(scale_t));
+                const auto token_idx = recv_token_begin_idx + i;
+                const auto token_stride = num_elems_per_pack;
+                const auto pack_stride = num_ranks * num_max_dispatch_tokens_per_rank * num_elems_per_pack;
+
+                if (lane_id < num_scales) {
+                    const auto pack_idx = lane_id / num_elems_per_pack;
+                    const auto elem_idx = lane_id % num_elems_per_pack;
+                    auto scale = extract_required_scale_format<kUseUE8M0>(ld_nc_global(src_scales + lane_id));
+                    recv_x_scales[token_idx * token_stride + pack_idx * pack_stride + elem_idx] = scale;
+                }
+                if (lane_id + kWarpSize < num_scales) {
+                    const auto pack_idx = (lane_id + kWarpSize) / num_elems_per_pack;
+                    const auto elem_idx = (lane_id + kWarpSize) % num_elems_per_pack;
+                    auto scale = extract_required_scale_format<kUseUE8M0>(ld_nc_global(src_scales + lane_id + kWarpSize));
+                    recv_x_scales[token_idx * token_stride + pack_idx * pack_stride + elem_idx] = scale;
+                }
             }
         }
     }
@@ -381,7 +400,7 @@ LOW_LATENCY_DISPATCH_RECV:
 #endif
 }
 
-void dispatch(void* packed_recv_x, float* packed_recv_x_scales,
+void dispatch(void* packed_recv_x, void* packed_recv_x_scales,
               int* packed_recv_src_info, int64_t* packed_recv_layout_range,
               int* packed_recv_count,
               int* global_atomic_counter,
@@ -389,10 +408,12 @@ void dispatch(void* packed_recv_x, float* packed_recv_x_scales,
               const void* x, const int64_t* topk_idx,
               int64_t* next_clean, int num_next_clean_int,
               int num_tokens, int hidden, int num_max_dispatch_tokens_per_rank,
-              int num_topk, int num_experts, int rank, int num_ranks, bool use_fp8,
-              void* workspace, hipStream_t stream, int phases) {
+              int num_topk, int num_experts, int rank, int num_ranks, 
+              bool use_fp8, bool round_scale, bool use_ue8m0,
+              void* workspace, int num_device_sms, 
+              hipStream_t stream, int phases) {
     constexpr int kNumMaxTopK = 11;
-    const int num_warp_groups = ceil_div(num_experts, /*num_device_sms*/80);
+    const int num_warp_groups = ceil_div(num_experts, num_device_sms);
     const int num_warps_per_group = 16 / num_warp_groups;
     EP_HOST_ASSERT(num_warp_groups > 0 and num_warps_per_group > 0);
     EP_HOST_ASSERT(kNumMaxTopK + 1 <= num_warp_groups * num_warps_per_group);
@@ -407,8 +428,11 @@ void dispatch(void* packed_recv_x, float* packed_recv_x_scales,
     EP_HOST_ASSERT(num_experts * sizeof(int) * 2 <= NUM_WORKSPACE_BYTES);
 
 #define DISPATCH_LAUNCH_CASE(hidden) { \
-auto dispatch_func = use_fp8 ? dispatch<true, hidden> : \
-                               dispatch<false, hidden>; \
+auto dispatch_func = dispatch<false, false, hidden>; \
+if (use_fp8 and not use_ue8m0)                       \
+    dispatch_func = dispatch<true, false, hidden>;   \
+if (use_fp8 and use_ue8m0)                           \
+    dispatch_func = dispatch<true, true, hidden>;    \
 LAUNCH_KERNEL_NON_COOPERATIVE(&cfg, dispatch_func, \
               packed_recv_x, packed_recv_x_scales, \
               packed_recv_src_info, packed_recv_layout_range, \
@@ -420,15 +444,15 @@ LAUNCH_KERNEL_NON_COOPERATIVE(&cfg, dispatch_func, \
               next_clean, num_next_clean_int, \
               num_tokens, num_max_dispatch_tokens_per_rank, \
               num_topk, num_experts, rank, num_ranks, \
-              num_warp_groups, num_warps_per_group, phases); } break
+              num_warp_groups, num_warps_per_group, round_scale, phases); } break
 
     SETUP_LAUNCH_CONFIG(num_sms, num_warps * kWarpSize, stream);
     SWITCH_HIDDEN(DISPATCH_LAUNCH_CASE);
 #undef DISPATCH_LAUNCH_CASE
 }
 
-template <int kNumWarpGroups, int kNumWarpsPerGroup, int kHidden, int kNumMaxTopk>
-__global__ __launch_bounds__(kNumWarpGroups * kNumWarpsPerGroup * kWarpSize, 1) void
+template <int kHidden, int kNumMaxTopk>
+__global__ __launch_bounds__(16 * kWarpSize, 1) void
 combine(void* combined_x,
         void* rdma_recv_x, int64_t* rdma_recv_flag, void* rdma_send_x,
         const void* x, const int64_t* topk_idx, const float* topk_weights,
@@ -439,6 +463,7 @@ combine(void* combined_x,
         int num_combined_tokens, int hidden, int num_topk,
         int num_max_dispatch_tokens_per_rank,
         int num_experts, int rank, int num_ranks,
+        int num_warp_groups, int num_warps_per_group,
         int phases, bool zero_copy) {
 
 #if !defined(ROCM_DISABLE_CTX)
@@ -451,19 +476,21 @@ combine(void* combined_x,
     const auto num_threads = static_cast<int>(blockDim.x);
     const auto warp_id = thread_id / kWarpSize, lane_id = get_lane_id();
     const auto num_local_experts = num_experts / num_ranks;
-    const auto warp_group_id = warp_id / kNumWarpsPerGroup;
-    const auto sub_warp_id = warp_id % kNumWarpsPerGroup;
-    const auto responsible_expert_idx = sm_id * kNumWarpGroups + warp_group_id;
+    const auto warp_group_id = warp_id / num_warps_per_group;
+    const auto sub_warp_id = warp_id % num_warps_per_group;
+    const auto responsible_expert_idx = sm_id * num_warp_groups + warp_group_id;
 
     // Data type staffs
     constexpr int kNumElemsPerInt4 = sizeof(int4) / sizeof(hip_bfloat16);
     const size_t hidden_bf16_int4 = kHidden / kNumElemsPerInt4;
 
     // Message package
-    // BF16 mode: always use BF16 for hidden data (ignoring the extra flag slot)
-    constexpr size_t num_bytes_per_slot = sizeof(int4) + kHidden * sizeof(hip_bfloat16);
+    EP_STATIC_ASSERT(kHidden % FP8_QUANTIZATION_NUM_PER_CHANNEL == 0, "Invalid hidden");
+    constexpr int kNumDivisions = kHidden / FP8_QUANTIZATION_NUM_PER_CHANNEL;
+    constexpr int kNumMetaBytes = kNumDivisions * sizeof(float);
+    constexpr size_t num_bytes_per_slot = sizeof(int4) + kHidden * sizeof(hip_bfloat16) + kNumMetaBytes;
     EP_STATIC_ASSERT(num_bytes_per_slot % sizeof(int4) == 0, "Invalid vectorization");
-    __syncthreads();
+
     // 16 is the max possible number of warps in AMD GPUs 
     constexpr int kMaxNumWarps = 1024 / kWarpSize;
     __shared__ volatile int sync_large_warp_counters[kMaxNumWarps];
@@ -508,13 +535,13 @@ combine(void* combined_x,
         unpack2(layout, num_tokens_to_send, offset);
 
         // Issue IBGDA send
-        for (int token_idx = offset + sub_warp_id; token_idx < offset + num_tokens_to_send; token_idx += kNumWarpsPerGroup) {
+        for (int token_idx = offset + sub_warp_id; token_idx < offset + num_tokens_to_send; token_idx += num_warps_per_group) {
             const auto x_int4 = local_x + token_idx * hidden_bf16_int4;
             const auto rdma_send_type_row = reinterpret_cast<int*>(rdma_send_x_vec + token_idx * num_bytes_per_slot);
             const auto rdma_send_x_vec_row = reinterpret_cast<uint8_t*>(rdma_send_type_row + 4);
 
             // Copy directly to local rank, or copy to buffer and issue RDMA
-            auto src_idx = __ldg(local_src_info + token_idx);
+            const auto src_idx = shfl_sync(__ldg(local_src_info + token_idx), 0);
             const auto buf_ptr = reinterpret_cast<int64_t>(rdma_send_x_vec_row);
             const auto dst_ptr = reinterpret_cast<uint64_t>(rdma_recv_x) + (global_expert_idx * num_max_dispatch_tokens_per_rank + src_idx) * num_bytes_per_slot + sizeof(int4);
             if (dst_rank == rank) {
@@ -542,13 +569,13 @@ combine(void* combined_x,
         }
 
         // Put finishing flag
-        EP_STATIC_ASSERT(kNumWarpsPerGroup > 1, "Requires more than one warp per group");
+        EP_DEVICE_ASSERT(num_warps_per_group > 1);
         if (lane_id == 0){
             // volatile int ret = __hip_atomic_fetch_add(&sync_large_warp_counters[warp_group_id], 1,__ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_WORKGROUP);
             volatile int ret = atomicAdd((int*)&sync_large_warp_counters[warp_group_id], 1);
         }
         syncwarp();
-        while (sync_large_warp_counters[warp_group_id] < (kNumWarpsPerGroup));
+        while (sync_large_warp_counters[warp_group_id] < num_warps_per_group);
         if (sub_warp_id == 1 and lane_id == 0) {
             while (ld_acquire_global(atomic_clean_flag) == 0);
             if (dst_rank != rank) {
@@ -572,7 +599,7 @@ combine(void* combined_x,
 
     // Wait all ranks to arrive and notify PCIe usage
     if (responsible_expert_idx < num_experts) {
-        EP_STATIC_ASSERT(kNumWarpsPerGroup > 1, "Invalid number of warps per group");
+        EP_DEVICE_ASSERT(num_warps_per_group > 1);
         if (sub_warp_id == 0 and lane_id == 0){
             while (ld_acquire_global(reinterpret_cast<int*>(rdma_recv_flag + responsible_expert_idx)) == 0);
         }
@@ -630,14 +657,17 @@ void combine(void* combined_x,
              int64_t* next_clean, int num_next_clean_int,
              int num_combined_tokens, int hidden, int num_max_dispatch_tokens_per_rank,
              int num_topk, int num_experts, int rank, int num_ranks,
-             void* workspace, hipStream_t stream,
+             void* workspace, int num_device_sms, hipStream_t stream,
              int phases, bool zero_copy) {
-    constexpr int kNumWarpsPerGroup = 4;
-    constexpr int kNumWarpGroups = 4;
-    constexpr int kNumMaxTopk = 9;
+    constexpr int kNumMaxTopk = 11;
+    const int num_warp_groups = ceil_div(num_experts, num_device_sms);
+    const int num_warps_per_group = 16 / num_warp_groups; // num_warps_per_group>1, "Requires more than one warp per group"
+    const int num_recv_per_sm = ceil_div(num_combined_tokens, num_device_sms);
+    EP_HOST_ASSERT(num_warp_groups > 0 and num_warps_per_group > 0 and num_recv_per_sm >= 0);
 
-    const auto num_warps = kNumWarpGroups * kNumWarpsPerGroup;
-    const auto num_sms = ceil_div(num_experts, kNumWarpGroups);
+    const auto num_warps = num_warp_groups * num_warps_per_group;
+    const auto num_sms =
+        max(ceil_div(num_experts, num_warp_groups), num_recv_per_sm == 0 ? 1 : ceil_div(num_combined_tokens, num_recv_per_sm));
 
     // Check workspace
     auto atomic_clean_flag = reinterpret_cast<int*>(workspace);
@@ -645,7 +675,7 @@ void combine(void* combined_x,
     EP_HOST_ASSERT(num_topk <= kNumMaxTopk);
 
 #define COMBINE_LAUNCH_CASE(hidden) { \
-auto combine_func = combine<kNumWarpGroups, kNumWarpsPerGroup, hidden, kNumMaxTopk>; \
+auto combine_func = combine<hidden, kNumMaxTopk>; \
 LAUNCH_KERNEL_NON_COOPERATIVE(&cfg, combine_func, \
               combined_x, \
               rdma_recv_x, rdma_recv_flag, rdma_send_x, \
@@ -656,7 +686,7 @@ LAUNCH_KERNEL_NON_COOPERATIVE(&cfg, combine_func, \
               num_combined_tokens, hidden, num_topk, \
               num_max_dispatch_tokens_per_rank, \
               num_experts, rank, num_ranks, \
-              phases, zero_copy); } break
+              num_warp_groups, num_warps_per_group, phases, zero_copy); } break
 
     SETUP_LAUNCH_CONFIG(num_sms, num_warps * kWarpSize, stream);
     SWITCH_HIDDEN(COMBINE_LAUNCH_CASE);

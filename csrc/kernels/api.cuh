@@ -138,7 +138,7 @@ void clean_low_latency_buffer(int64_t* clean_0, int num_clean_int_0,
                                 int64_t* clean_1, int num_clean_int_1,
                                 hipStream_t stream);
 
-void dispatch(void* packed_recv_x, float* packed_recv_x_scales,
+void dispatch(void* packed_recv_x, void* packed_recv_x_scales,
                 int* packed_recv_src_info, int64_t* packed_recv_layout_range,
                 int* packed_recv_count,
                 int* global_atomic_counter,
@@ -146,8 +146,9 @@ void dispatch(void* packed_recv_x, float* packed_recv_x_scales,
                 const void* x, const int64_t* topk_idx,
                 int64_t* next_clean, int num_next_clean_int,
                 int num_tokens, int hidden, int num_max_dispatch_tokens_per_rank,
-                int num_topk, int num_experts, int rank, int num_ranks, bool use_fp8,
-                void* workspace, hipStream_t stream, int phases);
+                int num_topk, int num_experts, int rank, int num_ranks,
+                bool use_fp8, bool round_scale, bool use_ue8m0,
+                void* workspace, int num_device_sms, hipStream_t stream, int phases);
 
 void combine(void* combined_x,
                 void* rdma_recv_x, int64_t* rdma_recv_flag, void* rdma_send_x,
@@ -157,7 +158,7 @@ void combine(void* combined_x,
                 int64_t* next_clean, int num_next_clean_int,
                 int num_combined_tokens, int hidden, int num_max_dispatch_tokens_per_rank,
                 int num_topk, int num_experts, int rank, int num_ranks,
-                void* workspace, hipStream_t stream,
+                void* workspace, int num_device_sms, hipStream_t stream,
                 int phases, bool zero_copy);
 
 } // namespace internode_ll

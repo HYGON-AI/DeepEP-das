@@ -440,9 +440,6 @@ dispatch(int4 *recv_x, float *recv_x_scales, int64_t *recv_topk_idx, float *recv
 
     auto warp_role = role_meta.first;
     auto target_rank = role_meta.second; // Not applicable for RDMA senders
-    // if(lane_id==0){
-    //     printf("tid=%d, bid=%d, warp_role=%d\n", threadIdx.x, blockIdx.x, warp_role);
-    // }
 
     // RDMA symmetric layout
     auto hidden_bytes             = hidden_int4 * sizeof(int4);
@@ -1610,8 +1607,6 @@ combine(int4 *combined_x, float *combined_topk_weights, const bool *is_combined_
                         int lds_dst_rdma_rank = dst_rdma_rank + (iter % num_sync_large_iteration) * kNumRDMARanks + mode * rdma_warp_counters;
                         //reset index in the LDS to avoid race condition due to warp scheduling
                         int reset_idx =         dst_rdma_rank + ((iter + num_sync_large_iteration/2) % num_sync_large_iteration) * kNumRDMARanks + mode * rdma_warp_counters;
-                        // // if (lane_id==0)
-                        // //     printf("rank %d dst_rdma_rank %d iter %d  warp_id %d  val %d\n", rank, dst_rdma_rank, iter, warp_id, sync_large_warp_counters[lds_dst_rdma_rank]);
                         auto start_time = wall_clock64();
                         if (lane_id == 0){
                             volatile int ret = atomicAdd((int*)&sync_large_warp_counters[lds_dst_rdma_rank], 1);

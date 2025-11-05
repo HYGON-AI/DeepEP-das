@@ -1293,7 +1293,8 @@ void Buffer::clean_low_latency_buffer(int num_max_dispatch_tokens_per_rank, int 
 std::tuple<torch::Tensor, std::optional<torch::Tensor>, torch::Tensor, torch::Tensor, torch::Tensor, std::optional<EventHandle>, std::optional<std::function<void()>>>
 Buffer::low_latency_dispatch(const torch::Tensor& x, const torch::Tensor& topk_idx,
                              int num_max_dispatch_tokens_per_rank, int num_experts,
-                             bool use_fp8, bool async, bool return_recv_hook) {
+                             bool use_fp8, bool round_scale, bool use_ue8m0, 
+                             bool async, bool return_recv_hook) {
     EP_HOST_ASSERT(low_latency_mode);
 
     // Tensor checks
@@ -1306,8 +1307,8 @@ Buffer::low_latency_dispatch(const torch::Tensor& x, const torch::Tensor& topk_i
     EP_HOST_ASSERT(num_experts % num_ranks == 0);
 
     auto num_tokens = static_cast<int>(x.size(0)), hidden = static_cast<int>(x.size(1));
-    auto num_scales = hidden / 128, num_topk = static_cast<int>(topk_idx.size(1));
-    int num_local_experts = num_experts / num_ranks;
+    auto num_topk = static_cast<int>(topk_idx.size(1));
+    auto num_local_experts = num_experts / num_ranks;
 
     // Buffer control
     LowLatencyLayout layout(rdma_buffer_ptr, num_max_dispatch_tokens_per_rank, hidden, num_ranks, num_experts);
@@ -1339,12 +1340,21 @@ Buffer::low_latency_dispatch(const torch::Tensor& x, const torch::Tensor& topk_i
 
     // Allocate column-majored scales
     auto packed_recv_x_scales = std::optional<torch::Tensor>();
-    float* packed_recv_x_scales_ptr = nullptr;
+    void* packed_recv_x_scales_ptr = nullptr;
     if (use_fp8) {
         EP_HOST_ASSERT((num_ranks * num_max_dispatch_tokens_per_rank) % 4 == 0 and "TMA requires the number of tokens to be multiple of 4");
-        packed_recv_x_scales = torch::empty({num_local_experts, num_scales, num_ranks * num_max_dispatch_tokens_per_rank}, torch::dtype(torch::kFloat32).device(torch::kCUDA));
+        // TODO: support unaligned cases
+        EP_HOST_ASSERT(hidden % (FP8_QUANTIZATION_NUM_PER_CHANNEL * 4) == 0);
+        if (not use_ue8m0) {
+            packed_recv_x_scales = torch::empty({num_local_experts, hidden / FP8_QUANTIZATION_NUM_PER_CHANNEL, num_ranks * num_max_dispatch_tokens_per_rank},
+                                                torch::dtype(torch::kFloat32).device(torch::kCUDA));
+        } else {
+            EP_HOST_ASSERT(round_scale);
+            packed_recv_x_scales = torch::empty({num_local_experts, hidden / (FP8_QUANTIZATION_NUM_PER_CHANNEL * 4), num_ranks * num_max_dispatch_tokens_per_rank},
+                                                torch::dtype(torch::kInt).device(torch::kCUDA));
+        }
         packed_recv_x_scales = torch::transpose(packed_recv_x_scales.value(), 1, 2);
-        packed_recv_x_scales_ptr = packed_recv_x_scales->data_ptr<float>();
+        packed_recv_x_scales_ptr = packed_recv_x_scales->data_ptr();
     }
 
     // Kernel launch
@@ -1359,8 +1369,9 @@ Buffer::low_latency_dispatch(const torch::Tensor& x, const torch::Tensor& topk_i
                             x.data_ptr(), topk_idx.data_ptr<int64_t>(),
                             next_clean_meta.first, next_clean_meta.second,
                             num_tokens, hidden, num_max_dispatch_tokens_per_rank,
-                            num_topk, num_experts, rank, num_ranks, use_fp8,
-                            workspace, launch_stream, phases);
+                            num_topk, num_experts, rank, num_ranks, 
+                            use_fp8, round_scale, use_ue8m0,
+                            workspace, num_device_sms, launch_stream, phases);
     };
     launcher(return_recv_hook ? LOW_LATENCY_SEND_PHASE : (LOW_LATENCY_SEND_PHASE | LOW_LATENCY_RECV_PHASE));
 
@@ -1454,7 +1465,7 @@ Buffer::low_latency_combine(const torch::Tensor& x, const torch::Tensor& topk_id
                               next_clean_meta.first, next_clean_meta.second,
                               num_combined_tokens, hidden, num_max_dispatch_tokens_per_rank,
                               num_topk, num_experts, rank, num_ranks,
-                              workspace, launch_stream,
+                              workspace, num_device_sms, launch_stream,
                               phases, zero_copy);
     };
     launcher(return_recv_hook ? LOW_LATENCY_SEND_PHASE : (LOW_LATENCY_SEND_PHASE | LOW_LATENCY_RECV_PHASE));
