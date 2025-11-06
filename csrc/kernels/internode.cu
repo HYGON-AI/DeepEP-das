@@ -93,10 +93,9 @@ __forceinline__ __device__ void
 nvshmem_barrier_with_same_gpu_idx(const rocshmem::rocshmem_team_t &rdma_team) {
     // NOTE: shmem_device_barrier_all() might be an issue as
     // it doesn't follow OpenSHMEM specification on ROCm
-    // kLowLatencyMode
-    //     ? void(rocshmem::rocshmem_ctx_barrier(rocshmem::ROCSHMEM_CTX_DEFAULT, rdma_team))
-    //     : rocshmem::rocshmem_barrier_all();
-    rocshmem::rocshmem_barrier_all();
+    kLowLatencyMode
+        ? void(rocshmem::rocshmem_ctx_barrier(rocshmem::ROCSHMEM_CTX_DEFAULT, rdma_team))
+        : rocshmem::rocshmem_barrier_all();
 }
 
 template <bool kLowLatencyMode, int kNumRDMARanks>

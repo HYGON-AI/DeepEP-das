@@ -486,9 +486,7 @@ combine(void* combined_x,
 
     // Message package
     EP_STATIC_ASSERT(kHidden % FP8_QUANTIZATION_NUM_PER_CHANNEL == 0, "Invalid hidden");
-    constexpr int kNumDivisions = kHidden / FP8_QUANTIZATION_NUM_PER_CHANNEL;
-    constexpr int kNumMetaBytes = kNumDivisions * sizeof(float);
-    constexpr size_t num_bytes_per_slot = sizeof(int4) + kHidden * sizeof(hip_bfloat16) + kNumMetaBytes;
+    constexpr size_t num_bytes_per_slot = sizeof(int4) + kHidden * sizeof(hip_bfloat16);
     EP_STATIC_ASSERT(num_bytes_per_slot % sizeof(int4) == 0, "Invalid vectorization");
 
     // 16 is the max possible number of warps in AMD GPUs 

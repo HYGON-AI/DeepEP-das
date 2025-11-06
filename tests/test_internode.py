@@ -260,18 +260,21 @@ def get_hidden_bytes(args: argparse.Namespace) -> int:
 def test_loop(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
     num_nodes = int(os.getenv('WORLD_SIZE', 1))
     rank, num_ranks, group = init_dist(local_rank, num_local_ranks)
+    num_rdma_bytes_ll = 0
     if args.test_ll_compatibility:
         ll_num_tokens, ll_hidden, ll_num_experts, ll_num_topk = 16, 5120, 256, 9
+        num_rdma_bytes_ll = deep_ep.Buffer.get_low_latency_rdma_size_hint(ll_num_tokens, ll_hidden, num_ranks, ll_num_experts)
 
     num_sms = 30
     num_qps_per_rank = max(num_sms, ll_num_experts // num_ranks if args.test_ll_compatibility else 0)
 
     hidden_bytes = get_hidden_bytes(args)
-    num_nvl_bytes, num_rdma_bytes = 0, 0
+    num_nvl_bytes, num_rdma_bytes, num_rdma_bytes_norm = 0, 0, 0
     for config in (deep_ep.Buffer.get_dispatch_config(group.size()), deep_ep.Buffer.get_combine_config(group.size())):
         num_nvl_bytes = max(config.get_nvl_buffer_size_hint(hidden_bytes, group.size()), num_nvl_bytes)
-        num_rdma_bytes = max(config.get_rdma_buffer_size_hint(hidden_bytes, group.size()), num_rdma_bytes)
+        num_rdma_bytes_norm = max(config.get_rdma_buffer_size_hint(hidden_bytes, group.size()), num_rdma_bytes)
 
+    num_rdma_bytes = max(num_rdma_bytes_norm, num_rdma_bytes_ll)
     buffer = deep_ep.Buffer(group, num_nvl_bytes, num_rdma_bytes, low_latency_mode=args.test_ll_compatibility,
                             num_qps_per_rank=num_qps_per_rank, explicitly_destroy=True)
     assert num_local_ranks == 8 and num_ranks > 8

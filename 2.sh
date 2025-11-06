@@ -12,7 +12,8 @@ export UCX_NET_DEVICES=mlx5_2:1,mlx5_3:1,mlx5_4:1,mlx5_5:1,mlx5_6:1,mlx5_7:1,mlx
 export ROCSHMEM_ALLOWED_IBV_DEVICES=mlx5_2,mlx5_3,mlx5_4,mlx5_5,mlx5_6,mlx5_7,mlx5_8,mlx5_9
 export HIP_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 # export ROCSHMEM_HEAP_SIZE=536870912 805306368 10737418240
-export ROCSHMEM_HEAP_SIZE=2880100992
+export ROCSHMEM_HEAP_SIZE=10737418240
 # torchrun --nproc-per-node=1 --nnodes=2 --node-rank=1 --master-addr="${MASTER_ADDR:-127.0.0.1}" --master-port=1234 tests/test_internode.py
 # torchrun --nproc-per-node=1 --nnodes=2 --node-rank=1 --master-addr="${MASTER_ADDR:-127.0.0.1}" --master-port=1234 tests/test_low_latency.py
-torchrun --nproc-per-node=1 --nnodes=2 --node-rank=1 --master-addr="${MASTER_ADDR:-127.0.0.1}" --master-port=1234 tests/test_low_latency_new.py
+# torchrun --nproc-per-node=1 --nnodes=2 --node-rank=1 --master-addr="${MASTER_ADDR:-127.0.0.1}" --master-port=1234 tests/test_low_latency_new.py
+torchrun --nproc-per-node=1 --nnodes=2 --node-rank=1 --master-addr="${MASTER_ADDR:-127.0.0.1}" --master-port=1234 tests/test_internode.py --test-ll-compatibility

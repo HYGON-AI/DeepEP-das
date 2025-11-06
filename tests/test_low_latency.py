@@ -163,6 +163,10 @@ def test_loop(local_rank: int, num_local_ranks: int):
         for i in range(20):
             assert test_main(num_tokens, hidden, num_experts, num_topk, rank, num_ranks, group, buffer, seed=seed) == ref_hash, f'Error: seed={seed}'
 
+    buffer.destroy()
+    dist.barrier()
+    dist.destroy_process_group()
+
 if __name__ == '__main__':
     print("main start...")
     # TODO: you may modify NUMA binding for less CPU overhead
