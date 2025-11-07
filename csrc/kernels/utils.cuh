@@ -342,7 +342,7 @@ __device__ __forceinline__ dtype_t broadcast(dtype_t &ptr, int src_lane_idx) {
     return *reinterpret_cast<dtype_t *>(recv_int_values);
 }
 
-#ifdef USE_ROCM
+#ifndef FORCE_NVSHMEM_API
 constexpr float kFP8Margin = 1e-4;
 constexpr float kFinfoAmaxE4M3 = 240.0f;
 constexpr float kFinfoAmaxInvE4M3 = 1.0f / kFinfoAmaxE4M3;

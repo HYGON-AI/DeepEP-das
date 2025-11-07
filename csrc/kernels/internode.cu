@@ -3,10 +3,9 @@
 #include "configs.cuh"
 #include "launch.cuh"
 #include "utils.cuh"
+#include "shmem_wrapper.cuh"
 
 #ifndef DISABLE_ROCSHMEM
-
-#include <rocshmem/rocshmem.hpp>
 
 // TODO: fix unroll warnings
 // #ifdef __clang__
@@ -19,7 +18,7 @@ namespace deep_ep {
 
 namespace internode {
 
-extern rocshmem::rocshmem_team_t cpu_rdma_team;
+extern shmem_team_t cpu_rdma_team;
 
 struct SourceMeta {
     int src_rdma_rank, is_token_in_nvl_rank_bits;
@@ -51,9 +50,8 @@ __host__ __device__ __forceinline__ int get_num_bytes_per_rdma_token(int hidden_
                                                                      int num_topk_idx,
                                                                      int num_topk_weights) {
     return static_cast<int>(ALIGN(hidden_int4 * sizeof(int4) + sizeof(SourceMeta) +
-                                      num_scales * sizeof(float) + num_topk_idx * sizeof(int) +
-                                      num_topk_weights * sizeof(float),
-                                  sizeof(int4)));
+                                  num_scales * sizeof(float) + num_topk_idx * sizeof(int) +
+                                  num_topk_weights * sizeof(float), sizeof(int4)));
 }
 
 __host__ __device__ __forceinline__ std::pair<int, int>
@@ -61,9 +59,8 @@ get_rdma_clean_meta(int hidden_int4, int num_scales, int num_topk_idx, int num_t
                     int num_rdma_ranks, int num_rdma_recv_buffer_tokens, int num_sms) {
     // Return `int32_t` offset and count to clean
     return {(get_num_bytes_per_rdma_token(hidden_int4, num_scales, num_topk_idx, num_topk_weights) *
-             num_rdma_recv_buffer_tokens * num_rdma_ranks * 2 * num_sms) /
-                sizeof(int),
-            (NUM_MAX_NVL_PEERS * 2 + 4) * num_rdma_ranks * 2 * num_sms};
+           num_rdma_recv_buffer_tokens * num_rdma_ranks * 2 * num_sms) / sizeof(int),
+           (NUM_MAX_NVL_PEERS * 2 + 4) * num_rdma_ranks * 2 * num_sms};
 }
 __host__ __device__ __forceinline__ std::pair<int, int>
 get_nvl_clean_meta(int hidden_int4, int num_scales, int num_topk_idx, int num_topk_weights,
@@ -74,10 +71,9 @@ get_nvl_clean_meta(int hidden_int4, int num_scales, int num_topk_idx, int num_to
                               "Invalid size of `SourceMeta`");
     return {
         (num_nvl_recv_buffer_tokens *
-         (hidden_int4 * sizeof(int4) + num_scales * sizeof(float) + num_topk_idx * sizeof(int) +
-          num_topk_weights * sizeof(float) + sizeof(SourceMeta)) *
-         num_nvl_ranks * num_sms) /
-            sizeof(int),
+        (hidden_int4 * sizeof(int4) + num_scales * sizeof(float) + num_topk_idx * sizeof(int) +
+        num_topk_weights * sizeof(float) + sizeof(SourceMeta)) *
+        num_nvl_ranks * num_sms) / sizeof(int),
         num_nvl_ranks * (2 * num_rdma_ranks + 2) * num_sms,
     };
 }
@@ -90,12 +86,10 @@ __forceinline__ __device__ int translate_dst_rdma_rank(const int dst_rdma_rank,
 
 template <bool kLowLatencyMode>
 __forceinline__ __device__ void
-nvshmem_barrier_with_same_gpu_idx(const rocshmem::rocshmem_team_t &rdma_team) {
+nvshmem_barrier_with_same_gpu_idx(const shmem_team_t &rdma_team) {
     // NOTE: shmem_device_barrier_all() might be an issue as
     // it doesn't follow OpenSHMEM specification on ROCm
-    kLowLatencyMode
-        ? void(rocshmem::rocshmem_ctx_barrier(rocshmem::ROCSHMEM_CTX_DEFAULT, rdma_team))
-        : rocshmem::rocshmem_barrier_all();
+    kLowLatencyMode ? shmem_barrier(rdma_team) : shmem_device_barrier_all();
 }
 
 template <bool kLowLatencyMode, int kNumRDMARanks>
@@ -109,7 +103,7 @@ notify_dispatch(const int *num_tokens_per_rank, int *moe_recv_counter_mapped, in
                 int *rdma_channel_prefix_matrix, int *recv_rdma_rank_prefix_sum,
                 int *gbl_channel_prefix_matrix, int *recv_gbl_rank_prefix_sum,
                 void *rdma_buffer_ptr, void **buffer_ptrs, int **barrier_signal_ptrs, int rank,
-                const rocshmem::rocshmem_team_t rdma_team) {
+                const shmem_team_t rdma_team) {
     auto sm_id     = static_cast<int>(blockIdx.x);
     auto thread_id = static_cast<int>(threadIdx.x), warp_id = thread_id / kWarpSize,
          lane_id     = get_lane_id();
@@ -159,7 +153,7 @@ notify_dispatch(const int *num_tokens_per_rank, int *moe_recv_counter_mapped, in
         // TODO: more light fence or barrier or signaling
         // TODO: overlap EP barrier and NVL cleaning
         if (thread_id < kNumRDMARanks) {
-            rocshmem::rocshmem_int_put_nbi(
+            shmem_int_put_nbi(
                 rdma_recv_num_tokens_mixed.recv_buffer(rdma_rank),
                 rdma_recv_num_tokens_mixed.send_buffer(thread_id),
                 NUM_MAX_NVL_PEERS + num_rdma_experts + 1,
@@ -405,9 +399,10 @@ dispatch(int4 *recv_x, float *recv_x_scales, int64_t *recv_topk_idx, float *recv
         kForwarderCoordinator,  // 向远端RDMA确认接收
         kNVLReceivers           // 从nvl缓存写入到recv_x
     };
-
-    __shared__ rocshmem::rocshmem_ctx_t ctx;
-    rocshmem::rocshmem_wg_ctx_create(0, &ctx);
+#ifndef FORCE_NVSHMEM_API
+    __shared__ shmem_ctx_t ctx;
+    shmem_wg_ctx_create(&ctx);
+#endif
 
     const auto sm_id       = static_cast<int>(blockIdx.x);
     const auto num_threads = static_cast<int>(blockDim.x), num_warps = num_threads / kWarpSize;
@@ -521,13 +516,23 @@ dispatch(int4 *recv_x, float *recv_x_scales, int64_t *recv_topk_idx, float *recv
 
             syncwarp();
             if (dst_rdma_rank != rdma_rank) {
-                rocshmem::rocshmem_ctx_int_put_nbi_wave(
-                ctx, rdma_channel_meta.recv_buffer(rdma_rank),
+#ifndef FORCE_NVSHMEM_API
+                shmem_ctx_int_put_nbi_warp(ctx, 
+#else
+                shmemx_int_put_nbi_warp(
+#endif
+                rdma_channel_meta.recv_buffer(rdma_rank),
                 rdma_channel_meta.send_buffer(dst_rdma_rank), NUM_MAX_NVL_PEERS * 2 + 2,
                 translate_dst_rdma_rank<kLowLatencyMode>(dst_rdma_rank, nvl_rank));
             }
         }
-        rocshmem::rocshmem_ctx_quiet(ctx);
+
+#ifndef FORCE_NVSHMEM_API
+        shmem_ctx_quiet(ctx);                
+#else
+        shmem_fence();
+#endif
+
         // sync_rdma_sender_smem();
         __syncthreads();
 
@@ -736,15 +741,22 @@ dispatch(int4 *recv_x, float *recv_x_scales, int64_t *recv_topk_idx, float *recv
                 if(dst_rdma_rank != rdma_rank) {
                     auto dst_slot_idx = synced_last_issued_tail % num_max_rdma_chunked_recv_tokens;
                     EP_DEVICE_ASSERT(dst_slot_idx + num_tokens_to_issue <= num_max_rdma_chunked_recv_tokens);
-                    rocshmem::rocshmem_ctx_schar_put_nbi_wave(
-                        ctx,
+#ifndef FORCE_NVSHMEM_API
+                    shmem_ctx_schar_put_nbi_warp(ctx,
+#else
+                    shmemx_int8_put_nbi_warp(
+#endif
                         rdma_channel_data.recv_buffer(rdma_rank) +
                             dst_slot_idx * num_bytes_per_rdma_token,
                         rdma_channel_data.send_buffer(dst_rdma_rank) +
                             dst_slot_idx * num_bytes_per_rdma_token,
                         num_bytes_per_rdma_token * num_tokens_to_issue,
                         translate_dst_rdma_rank<kLowLatencyMode>(dst_rdma_rank, nvl_rank));
-                    rocshmem::rocshmem_ctx_quiet(ctx);
+#ifndef FORCE_NVSHMEM_API
+                    shmem_ctx_quiet(ctx);                
+#else
+                    shmem_fence();
+#endif
                 } else {
                     // 对于本地RDMA秩，使用较轻的内存屏障
                     memory_fence();
@@ -756,8 +768,12 @@ dispatch(int4 *recv_x, float *recv_x_scales, int64_t *recv_topk_idx, float *recv
                     last_issued_tail += num_tokens_to_issue;
                     num_tokens_to_send -= num_tokens_to_issue;
                     // 更新远端rdma 己方已发送的token数，用于做发送信息同步。用于与kRDMAAndNVLForwarder互相通信
-                    rocshmem::rocshmem_ctx_ulong_atomic_add(
-                        ctx, rdma_channel_tail.buffer(rdma_rank), num_tokens_to_issue,
+#ifndef FORCE_NVSHMEM_API
+                    shmem_ctx_ulong_atomic_add(ctx,
+#else
+                    shmem_signal_op_add(
+#endif
+                        rdma_channel_tail.buffer(rdma_rank), num_tokens_to_issue,
                         translate_dst_rdma_rank<kLowLatencyMode>(dst_rdma_rank, nvl_rank));
                 }
             }
@@ -992,8 +1008,12 @@ dispatch(int4 *recv_x, float *recv_x_scales, int64_t *recv_topk_idx, float *recv
 
             // 更新远程头部
             if(min_head != std::numeric_limits<int>::max() && min_head >= last_head + num_max_rdma_chunked_send_tokens && lane_id < kNumRDMARanks){
-                rocshmem::rocshmem_ctx_ulong_atomic_add(
-                    ctx, rdma_channel_head.buffer(rdma_rank), min_head - last_head,
+#ifndef FORCE_NVSHMEM_API
+                shmem_ctx_ulong_atomic_add(ctx,
+#else
+                shmem_signal_op_add(
+#endif
+                    rdma_channel_head.buffer(rdma_rank), min_head - last_head,
                     translate_dst_rdma_rank<kLowLatencyMode>(lane_id, nvl_rank));
                 last_head = min_head;
             }
@@ -1107,7 +1127,9 @@ dispatch(int4 *recv_x, float *recv_x_scales, int64_t *recv_topk_idx, float *recv
             }
         } // while(num_tokens_to_recv > 0)
     }
-    rocshmem::rocshmem_wg_ctx_destroy(&ctx);
+#ifndef FORCE_NVSHMEM_API
+    shmem_wg_ctx_destroy(&ctx);
+#endif
 }
 
 void dispatch(void *recv_x, float *recv_x_scales, int64_t *recv_topk_idx, float *recv_topk_weights,
@@ -1166,7 +1188,7 @@ cached_notify(const int rdma_clean_offset, const int rdma_num_int_clean, const i
               int num_channels, const int *rdma_channel_prefix_matrix,
               const int *rdma_rank_prefix_sum, int *combined_nvl_head, void *rdma_buffer_ptr,
               void **buffer_ptrs, int **barrier_signal_ptrs, int rank, int num_ranks,
-              bool is_cached_dispatch, const rocshmem::rocshmem_team_t rdma_team) {
+              bool is_cached_dispatch, const shmem_team_t rdma_team) {
     auto sm_id       = static_cast<int>(blockIdx.x);
     auto thread_id   = static_cast<int>(threadIdx.x);
     auto num_threads = static_cast<int>(blockDim.x);
@@ -1189,7 +1211,7 @@ cached_notify(const int rdma_clean_offset, const int rdma_num_int_clean, const i
         auto rdma_buffer_ptr_int = reinterpret_cast<int *>(rdma_buffer_ptr);
         for (int i = thread_id; i < rdma_num_int_clean; i += num_threads)
             rdma_buffer_ptr_int[rdma_clean_offset + i] = 0;
-        rocshmem::rocshmem_fence();
+        shmem_fence();
         __syncthreads();
 
         // Barrier again
@@ -1395,9 +1417,10 @@ combine(int4 *combined_x, float *combined_topk_weights, const bool *is_combined_
         kRDMACoordinator,
         kNVLCoordinator
     };
-
-    __shared__ rocshmem::rocshmem_ctx_t ctx;
-    rocshmem::rocshmem_wg_ctx_create(0, &ctx);
+#ifndef FORCE_NVSHMEM_API
+    __shared__ shmem_ctx_t ctx;
+    shmem_wg_ctx_create(&ctx);
+#endif
 
     const auto sm_id       = static_cast<int>(blockIdx.x);
     const auto num_threads = static_cast<int>(blockDim.x), num_warps = num_threads / kWarpSize;
@@ -1721,16 +1744,22 @@ combine(int4 *combined_x, float *combined_topk_weights, const bool *is_combined_
                 if(sub_warp_id == kNumWarpsPerForwarder - 1) {
                     if(dst_rdma_rank != rdma_rank) {
                         auto rdma_slot_idx = token_start_idx % num_max_rdma_chunked_recv_tokens;
-                        rocshmem::rocshmem_ctx_schar_put_nbi_wave(
-                            ctx,
+#ifndef FORCE_NVSHMEM_API
+                        shmem_ctx_schar_put_nbi_warp(ctx,
+#else
+                        shmemx_int8_put_nbi_warp(
+#endif
                             rdma_channel_data.recv_buffer(rdma_rank) +
                                 rdma_slot_idx * num_bytes_per_rdma_token,
                             rdma_channel_data.send_buffer(dst_rdma_rank) +
                                 rdma_slot_idx * num_bytes_per_rdma_token,
                             num_chunked_tokens * num_bytes_per_rdma_token,
                             translate_dst_rdma_rank<kLowLatencyMode>(dst_rdma_rank, nvl_rank));
-
-                        rocshmem::rocshmem_ctx_quiet(ctx);
+#ifndef FORCE_NVSHMEM_API
+                        shmem_ctx_quiet(ctx);                
+#else
+                        shmem_fence();
+#endif
                     } else {
                         memory_fence();
                     }
@@ -1738,8 +1767,12 @@ combine(int4 *combined_x, float *combined_topk_weights, const bool *is_combined_
                     // Write new RDMA tail
                     syncwarp();
                     if(lane_id == 0) {
-                        rocshmem::rocshmem_ctx_ulong_atomic_add(
-                            ctx, rdma_channel_tail.buffer(rdma_rank), num_chunked_tokens,
+#ifndef FORCE_NVSHMEM_API
+                        shmem_ctx_ulong_atomic_add(ctx,
+#else
+                        shmem_signal_op_add(
+#endif
+                            rdma_channel_tail.buffer(rdma_rank), num_chunked_tokens,
                             translate_dst_rdma_rank<kLowLatencyMode>(dst_rdma_rank, nvl_rank));
                     }
                 }
@@ -1867,8 +1900,12 @@ combine(int4 *combined_x, float *combined_topk_weights, const bool *is_combined_
                             min_head = min(min_head, rdma_receiver_rdma_head[i][dst_rdma_rank]);
 
                     if (min_head != std::numeric_limits<int>::max() and min_head >= last_rdma_head + num_max_rdma_chunked_send_tokens and lane_id < kNumRDMARanks) {
-                        rocshmem::rocshmem_ctx_ulong_atomic_add(
-                            ctx, rdma_channel_head.buffer(rdma_rank), min_head - last_rdma_head,
+#ifndef FORCE_NVSHMEM_API
+                        shmem_ctx_ulong_atomic_add(ctx,
+#else
+                        shmem_signal_op_add(
+#endif
+                            rdma_channel_head.buffer(rdma_rank), min_head - last_rdma_head,
                             translate_dst_rdma_rank<kLowLatencyMode>(dst_rdma_rank, nvl_rank));
 
                         last_rdma_head = min_head;
@@ -1880,7 +1917,9 @@ combine(int4 *combined_x, float *combined_topk_weights, const bool *is_combined_
             }
         }
     }
-    rocshmem::rocshmem_wg_ctx_destroy(&ctx);
+#ifndef FORCE_NVSHMEM_API
+    shmem_wg_ctx_destroy(&ctx);
+#endif
 }
 
 void combine(hipDataType type, void *combined_x, float *combined_topk_weights,

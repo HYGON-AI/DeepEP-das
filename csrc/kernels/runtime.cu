@@ -5,10 +5,8 @@
 #include "exception.cuh"
 #include "launch.cuh"
 #include "utils.cuh"
+#include "shmem_wrapper.cuh"
 
-#ifndef DISABLE_ROCSHMEM
-#include <rocshmem/rocshmem.hpp>
-#endif
 namespace deep_ep {
 
 namespace intranode {
@@ -33,60 +31,66 @@ void barrier(int **barrier_signal_ptrs, int rank, int num_ranks, hipStream_t str
 namespace internode {
 
 #ifndef DISABLE_ROCSHMEM
-rocshmem::rocshmem_team_t        cpu_rdma_team = rocshmem::ROCSHMEM_TEAM_INVALID;
-rocshmem::rocshmem_team_config_t cpu_rdma_team_config;
+shmem_team_t        cpu_rdma_team = EP_SHMEM_TEAM_INVALID;
+shmem_team_config_t cpu_rdma_team_config;
 
 std::vector<uint8_t> get_unique_id() {
-    rocshmem::rocshmem_uniqueid_t unique_id;
-    rocshmem::rocshmem_get_uniqueid(&unique_id);
-    std::vector<uint8_t> result(sizeof(rocshmem::rocshmem_uniqueid_t));
-    std::memcpy(result.data(), &unique_id, sizeof(rocshmem::rocshmem_uniqueid_t));
+    shmemx_uniqueid_t unique_id;
+    shmemx_get_uniqueid(&unique_id);
+    std::vector<uint8_t> result(sizeof(shmemx_uniqueid_t));
+    std::memcpy(result.data(), &unique_id, sizeof(shmemx_uniqueid_t));
     return result;
 }
 
-int init(const std::vector<uint8_t> &root_unique_id_val, int rank, int num_ranks,
-         bool low_latency_mode) {
-    rocshmem::rocshmem_uniqueid_t  root_unique_id;
-    rocshmem::rocshmem_init_attr_t attr;
-    std::memcpy(&root_unique_id, root_unique_id_val.data(), sizeof(rocshmem::rocshmem_uniqueid_t));
-    rocshmem::rocshmem_set_attr_uniqueid_args(rank, num_ranks, &root_unique_id, &attr);
-    rocshmem::rocshmem_init_attr(rocshmem::ROCSHMEM_INIT_WITH_UNIQUEID, &attr);
+int init(const std::vector<uint8_t> &root_unique_id_val, int rank, int num_ranks, bool low_latency_mode) {
+    shmemx_uniqueid_t  root_unique_id;
+    shmemx_init_attr_t attr;
+    std::memcpy(&root_unique_id, root_unique_id_val.data(), sizeof(shmemx_uniqueid_t));
+    shmemx_set_attr_uniqueid_args(rank, num_ranks, &root_unique_id, &attr);
+    shmemx_init_attr(EP_SHMEMX_INIT_WITH_UNIQUEID, &attr);
 
     // Create sub-RDMA teams
     // NOTES: if `num_ranks <= NUM_MAX_NVL_PEERS` then only low-latency kernels are used
     if (low_latency_mode and num_ranks > NUM_MAX_NVL_PEERS) {
-        EP_HOST_ASSERT(cpu_rdma_team == rocshmem::ROCSHMEM_TEAM_INVALID);
+        shmem_barrier_all();
+        EP_HOST_ASSERT(cpu_rdma_team == EP_SHMEM_TEAM_INVALID);
         EP_HOST_ASSERT(num_ranks % NUM_MAX_NVL_PEERS == 0);
-        EP_HOST_ASSERT(rocshmem::rocshmem_team_split_strided(
-                               rocshmem::ROCSHMEM_TEAM_WORLD, rank % NUM_MAX_NVL_PEERS,
+        EP_HOST_ASSERT(shmem_team_split_strided(
+                               EP_SHMEM_TEAM_WORLD, rank % NUM_MAX_NVL_PEERS,
                                NUM_MAX_NVL_PEERS, num_ranks / NUM_MAX_NVL_PEERS,
                                &cpu_rdma_team_config, 0, &cpu_rdma_team) == 0);
-        EP_HOST_ASSERT(cpu_rdma_team != rocshmem::ROCSHMEM_TEAM_INVALID);
+        EP_HOST_ASSERT(cpu_rdma_team != EP_SHMEM_TEAM_INVALID);
+
+#ifdef FORCE_NVSHMEM_API
+        nvshmemi_device_host_state_t* dev_state_ptr = nullptr;
+        CUDA_CHECK(hipGetSymbolAddress(reinterpret_cast<void**>(&dev_state_ptr), nvshmemi_device_state_d));
+        bool ibgda_is_initialized = false;
+        CUDA_CHECK(hipMemcpy(&dev_state_ptr->ibgda_is_initialized, &ibgda_is_initialized, sizeof(bool), hipMemcpyHostToDevice));
+#endif
     }
 
-    rocshmem::rocshmem_barrier_all();
-    return rocshmem::rocshmem_my_pe();
+    shmem_barrier_all();
+    return shmem_my_pe();
 }
 
 void *alloc(size_t size, size_t alignment) {
-    auto alloc_size = ALIGN(size, alignment);
-    return rocshmem::rocshmem_malloc(alloc_size);
+    return shmem_align(size, alignment);
 }
 
 void free(void *ptr) {
-    rocshmem::rocshmem_free(ptr);
+    shmem_free(ptr);
 }
 
 void barrier() {
-    rocshmem::rocshmem_barrier_all();
+    shmem_barrier_all();
 }
 
 void finalize() {
-    if (cpu_rdma_team != rocshmem::ROCSHMEM_TEAM_INVALID) {
-        rocshmem::rocshmem_team_destroy(cpu_rdma_team);
-        cpu_rdma_team = rocshmem::ROCSHMEM_TEAM_INVALID;
+    if (cpu_rdma_team != EP_SHMEM_TEAM_INVALID) {
+        shmem_team_destroy(cpu_rdma_team);
+        cpu_rdma_team = EP_SHMEM_TEAM_INVALID;
     }
-    rocshmem::rocshmem_finalize();
+    shmem_finalize();
 }
 #endif
 

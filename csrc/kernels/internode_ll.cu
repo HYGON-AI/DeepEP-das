@@ -11,9 +11,8 @@
 // low latency+RocSHMEM has issue with CTX.
 #define ROCM_DISABLE_CTX
 
-#include <rocshmem/rocshmem.hpp>
+#include "shmem_wrapper.cuh"
 
-using namespace rocshmem;
 namespace deep_ep {
 
 namespace internode_ll {
@@ -59,7 +58,7 @@ __global__ void clean_low_latency_buffer(int64_t* clean_0, int num_clean_int_0,
                                          int64_t* clean_1, int num_clean_int_1) {
     // Barrier before cleaning (in case of unfinished chunked EP)
     if (threadIdx.x == 0)
-        rocshmem::rocshmem_barrier_all();
+        internode::shmem_device_barrier_all();
 
     // Clean
     auto thread_id = static_cast<int>(threadIdx.x);
@@ -72,7 +71,7 @@ __global__ void clean_low_latency_buffer(int64_t* clean_0, int num_clean_int_0,
 
     // Barrier after cleaning (make sure low-latency mode work 
     if (threadIdx.x == 0)
-        rocshmem::rocshmem_barrier_all();
+        internode::shmem_device_barrier_all();
 }
 
 void clean_low_latency_buffer(int64_t* clean_0, int num_clean_int_0,
@@ -100,8 +99,8 @@ dispatch(void* packed_recv_x, void* packed_recv_x_scales,
          int num_warp_groups, int num_warps_per_group, 
          bool round_scale, int phases) {
 #if !defined(ROCM_DISABLE_CTX)
-    __shared__ rocshmem::rocshmem_ctx_t ctx;
-    rocshmem::rocshmem_wg_ctx_create(0, &ctx);
+    __shared__ internode::shmem_ctx_t ctx;
+    internode::shmem_wg_ctx_create(&ctx);
 #endif
 
     const auto sm_id = static_cast<int>(blockIdx.x);
@@ -221,9 +220,9 @@ dispatch(void* packed_recv_x, void* packed_recv_x_scales,
                                      rank * num_max_dispatch_tokens_per_rank * num_bytes_per_msg +
                                      slot_idx * num_bytes_per_msg;
                 if (dst_rank != rank) {
-                    rocshmem::rocshmem_schar_put_nbi_wave(reinterpret_cast<signed char*>(dst_ptr), 
+                    internode::shmemx_int8_put_nbi_warp(reinterpret_cast<signed char*>(dst_ptr), 
                         reinterpret_cast<signed char*>(src_ptr), num_bytes_per_msg, dst_rank);
-                    rocshmem::rocshmem_fence();
+                    internode::shmem_fence();
                 } else {
                     // NOTES: only 2 load iterations for 7K hidden with 8 unrolls
                     const auto* src_int4_ptr = reinterpret_cast<const int4*>(src_ptr);
@@ -288,7 +287,7 @@ dispatch(void* packed_recv_x, void* packed_recv_x_scales,
         // Wait local sends issued and send expert counts
         while (ld_acquire_global(atomic_finish_counter_per_expert + responsible_expert_idx) != FINISHED_SUM_TAG * 2);
         if (dst_rank != rank) {
-           rocshmem::rocshmem_long_atomic_add( rdma_recv_count + dst_expert_local_idx * num_ranks + rank, -num_tokens_sent - 1, dst_rank);
+            internode::shmem_long_atomic_add(rdma_recv_count + dst_expert_local_idx * num_ranks + rank, -num_tokens_sent - 1, dst_rank);
         } else {
             st_na_release(reinterpret_cast<int *>(rdma_recv_count + dst_expert_local_idx * num_ranks + rank), -num_tokens_sent - 1);
         }
@@ -396,7 +395,7 @@ LOW_LATENCY_DISPATCH_RECV:
     }
 
 #if !defined(ROCM_DISABLE_CTX)
-    rocshmem::rocshmem_wg_ctx_destroy(&ctx);
+    internode::shmem_wg_ctx_destroy(&ctx);
 #endif
 }
 
@@ -467,8 +466,8 @@ combine(void* combined_x,
         int phases, bool zero_copy) {
 
 #if !defined(ROCM_DISABLE_CTX)
-    __shared__ rocshmem::rocshmem_ctx_t ctx;
-    rocshmem::rocshmem_wg_ctx_create(0, &ctx);
+    __shared__ internode::shmem_ctx_t ctx;
+    internode::shmem_wg_ctx_create(&ctx);
 #endif
     const auto sm_id = static_cast<int>(blockIdx.x);
     const auto num_sms = static_cast<int>(gridDim.x);
@@ -539,7 +538,7 @@ combine(void* combined_x,
             const auto rdma_send_x_vec_row = reinterpret_cast<uint8_t*>(rdma_send_type_row + 4);
 
             // Copy directly to local rank, or copy to buffer and issue RDMA
-            const auto src_idx = shfl_sync(__ldg(local_src_info + token_idx), 0);
+            const auto src_idx = __ldg(local_src_info + token_idx);
             const auto buf_ptr = reinterpret_cast<int64_t>(rdma_send_x_vec_row);
             const auto dst_ptr = reinterpret_cast<uint64_t>(rdma_recv_x) + (global_expert_idx * num_max_dispatch_tokens_per_rank + src_idx) * num_bytes_per_slot + sizeof(int4);
             if (dst_rank == rank) {
@@ -552,16 +551,16 @@ combine(void* combined_x,
                 
                 //nvshmemi_ibgda_put_nbi_warp(dst_ptr, buf_ptr, hidden * sizeof(hip_bfloat16), dst_rank, local_expert_idx, lane_id, token_idx - offset);
 #if defined(ROCM_DISABLE_CTX)
-                    rocshmem::rocshmem_schar_put_nbi_wave(
+                    internode::shmemx_int8_put_nbi_warp(
 #else
-                    rocshmem::rocshmem_ctx_schar_put_nbi_wave(ctx,
+                    internode::shmem_ctx_schar_put_nbi_warp(ctx,
 #endif
                     reinterpret_cast<signed char*>(dst_ptr), reinterpret_cast<signed char*>(buf_ptr), hidden * sizeof(hip_bfloat16), dst_rank);
 
 #if defined(ROCM_DISABLE_CTX)
-                    rocshmem::rocshmem_fence();
+                    internode::shmem_fence();
 #else
-                    rocshmem::rocshmem_ctx_quiet(ctx);
+                    internode::shmem_ctx_quiet(ctx);
 #endif
                 }
         }
@@ -578,9 +577,9 @@ combine(void* combined_x,
             while (ld_acquire_global(atomic_clean_flag) == 0);
             if (dst_rank != rank) {
 #if defined(ROCM_DISABLE_CTX)
-                rocshmem::rocshmem_long_atomic_add(rdma_recv_flag + global_expert_idx, 1, dst_rank);
+                internode::shmem_long_atomic_add(rdma_recv_flag + global_expert_idx, 1, dst_rank);
 #else
-                rocshmem::rocshmem_ctx_long_atomic_add(ctx, rdma_recv_flag + global_expert_idx, 1, dst_rank);
+                internode::shmem_ctx_long_atomic_add(ctx, rdma_recv_flag + global_expert_idx, 1, dst_rank);
 #endif
             } else {
                 st_na_release(reinterpret_cast<int*>(rdma_recv_flag + global_expert_idx), 1);
@@ -643,7 +642,7 @@ combine(void* combined_x,
         }
     }
 #if !defined(ROCM_DISABLE_CTX)
-    rocshmem::rocshmem_wg_ctx_destroy(&ctx);
+    internode::shmem_wg_ctx_destroy(&ctx);
 #endif
 }
 
