@@ -55,8 +55,8 @@ build_rocshmem()
 }
 
 if [ "$USE_ROCSHMEM" == "ON" ]; then
-    if [ ! -d "rocshmem_dir" ]; then
-        mkdir -p rocshmem_dir
+    if [ ! -d "third-party/rocshmem_dir" ]; then
+        mkdir -p third-party/rocshmem_dir
     fi
     build_rocshmem
     SHMEM_INSTALL_PREFIX=$(pwd)/rocshmem_dir
