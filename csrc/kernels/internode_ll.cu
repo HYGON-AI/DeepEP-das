@@ -31,8 +31,7 @@ __device__ void grid_barrier(int* global_counter, int num_blocks) {
     __syncthreads();
     __threadfence();
     if (threadIdx.x == 0 ) {
-        // ret = __hip_atomic_fetch_add(&global_counter[0], 1, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT);
-        ret = atomicAdd(&global_counter[0], 1);
+        ret = __hip_atomic_fetch_add(&global_counter[0], 1, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT);
     }
     __syncthreads();
     if (threadIdx.x == 0) {
@@ -84,7 +83,7 @@ void clean_low_latency_buffer(int64_t* clean_0, int num_clean_int_0,
                   clean_0, num_clean_int_0, clean_1, num_clean_int_1);
 }
 
-template <bool kUseFP8, bool kUseUE8M0, int kHidden>
+template <bool kUseFP8, bool kUseUE8M0, bool kUseInt8, int kHidden>
 __global__ __launch_bounds__(16 * kWarpSize, 1) void
 dispatch(void* packed_recv_x, void* packed_recv_x_scales,
          int* packed_recv_src_info, int64_t* packed_recv_layout_range,
@@ -115,14 +114,14 @@ dispatch(void* packed_recv_x, void* packed_recv_x_scales,
 
     // FP8 staffs
     constexpr int kNumPerChannels = FP8_QUANTIZATION_NUM_PER_CHANNEL;
-    const int num_scales = kHidden / kNumPerChannels;
+    constexpr int kNumScales = kHidden / kNumPerChannels;
     const size_t hidden_bytes = kHidden * (kUseFP8 ? sizeof(__hip_fp8_storage_t) : sizeof(hip_bfloat16));
     const size_t hidden_int4 = hidden_bytes / sizeof(int4);
 
     // Message package: hidden data, FP8 scales, index at source
     // NOTES: currently we have 3 reserved int fields for future use
     using vec_t = typename std::conditional<kUseFP8, int2, int4>::type;
-    const size_t num_bytes_per_msg = sizeof(int4) + (kUseFP8 ? (kHidden + num_scales * sizeof(float)) : (kHidden * sizeof(hip_bfloat16)));
+    const size_t num_bytes_per_msg = sizeof(int4) + (kUseFP8 ? (kHidden + kNumScales * sizeof(float)) : (kHidden * sizeof(hip_bfloat16)));
     const size_t num_int4_per_msg = num_bytes_per_msg / sizeof(int4);
     EP_DEVICE_ASSERT(num_bytes_per_msg % sizeof(int4) == 0);
 
@@ -147,7 +146,7 @@ dispatch(void* packed_recv_x, void* packed_recv_x_scales,
         EP_DEVICE_ASSERT(kHidden % kNumElemsPerRead == 0);
         EP_STATIC_ASSERT(kNumElemsPerRead * kWarpSize % kNumPerChannels == 0, "Invalid vectorization");
         const auto num_threads = (num_warps - 1) * kWarpSize;
-        const size_t hidden_bf16_int4 = kHidden / kNumElemsPerRead;
+        constexpr int hidden_bf16_int4 = kHidden / kNumElemsPerRead;
 
         for (int token_idx = sm_id; token_idx < num_tokens; token_idx += num_sms) {
             const auto x_int4 = reinterpret_cast<const int4*>(x) + token_idx * hidden_bf16_int4;
@@ -159,13 +158,21 @@ dispatch(void* packed_recv_x, void* packed_recv_x_scales,
             auto dst_expert_idx = warp_id < num_topk ? static_cast<int>(__ldg(topk_idx + token_idx * num_topk + warp_id)) : -1;
             thread_id == 0 ? (*rdma_x_src_idx = token_idx) : 0;
 
+            __shared__ float int8_amaxf[kNumScales];
+            if constexpr(kUseInt8) {
+                if (thread_id < kNumScales) {
+                    int8_amaxf[thread_id] = kFP8Margin;
+                }
+                __syncthreads();
+            }
+
             // FP8 cast
             #pragma unroll
             for (int i = thread_id; i < hidden_bf16_int4; i += num_threads) {
                 // Read
                 auto int4_value = __ldg(x_int4 + i);
 
-                if (kUseFP8) {
+                if constexpr(kUseFP8) {
                     // Calculate local amax
                     auto bf16_values = reinterpret_cast<hip_bfloat16*>(&int4_value);
                     float fp32_values[kNumElemsPerRead];
@@ -178,25 +185,74 @@ dispatch(void* packed_recv_x, void* packed_recv_x_scales,
                     // Reduce amax and scale
                     EP_STATIC_ASSERT(kNumElemsPerRead * kWarpSize / kNumPerChannels == 4, "Invalid vectorization");
                     amax = warp_reduce_max<16>(amax);
-                    calculate_fp8_scales(amax, scale, scale_inv, round_scale);
-                    if (lane_id % 16 == 0)
-                        rdma_x_scales[i * kNumElemsPerRead / FP8_QUANTIZATION_NUM_PER_CHANNEL] = scale_inv;
+                    const int scale_offset = i * kNumElemsPerRead / FP8_QUANTIZATION_NUM_PER_CHANNEL;
 
-                    // Cast into send buffer
-                    vec_t int2_value;
-                    auto fp8x2_values = reinterpret_cast<__hip_fp8x2_storage_t*>(&int2_value);
-                    #pragma unroll
-                    for (int j = 0; j < kNumElemsPerRead; j += 2) {
-                        float2 fp32x2 = {fp32_values[j] * scale, fp32_values[j + 1] * scale};
-                        fp8x2_values[j / 2] = __hip_cvt_float2_to_fp8x2(fp32x2, __HIP_SATFINITE, __HIP_E4M3_FNUZ);
+                    if constexpr(kUseInt8) {
+                        // 记录每128个数的最大值
+                        int8_amaxf[scale_offset] = fmaxf(amax, int8_amaxf[scale_offset]);
+                    } else {
+                        calculate_fp8_scales(amax, scale, scale_inv, round_scale);
+                        if (lane_id % 16 == 0)
+                            rdma_x_scales[scale_offset] = scale_inv;
+
+                        // Cast into send buffer
+                        vec_t int2_value;
+                        auto fp8x2_values = reinterpret_cast<__hip_fp8x2_storage_t*>(&int2_value);
+                        #pragma unroll
+                        for (int j = 0; j < kNumElemsPerRead; j += 2) {
+                            float2 fp32x2 = {fp32_values[j] * scale, fp32_values[j + 1] * scale};
+                            fp8x2_values[j / 2] = __hip_cvt_float2_to_fp8x2(fp32x2, __HIP_SATFINITE, __HIP_E4M3_FNUZ);
+                        }
+                        rdma_x_vec[i] = int2_value;
                     }
-                    rdma_x_vec[i] = int2_value;
                 } else {
                     // Reinterpret-cast is for C++14 compatibility
                     rdma_x_vec[i] = *reinterpret_cast<vec_t*>(&int4_value);
                 }
             }
             __syncthreads();
+
+            if constexpr(kUseInt8) {
+                float amax_per_token = kFP8Margin;
+                // 并行规约，计算每个token的amax
+                for (int s = 0; s < kNumScales; s+=kWarpSize) {
+                    int src_idx = s + lane_id;
+                    float tmp_amaxf = 0;
+                    if(src_idx < kNumScales) {
+                        tmp_amaxf = int8_amaxf[src_idx];
+                    }
+                    tmp_amaxf = warp_reduce_max<kWarpSize>(tmp_amaxf);
+                    int8_amaxf[0] = fmaxf(tmp_amaxf, int8_amaxf[0]);
+                    __syncthreads();
+                }
+                amax_per_token = int8_amaxf[0];
+
+                // 根据最大值计算scale
+                float scale, scale_inv;
+                calculate_int8_scales(amax_per_token, scale, scale_inv);
+                if (thread_id == 0) {
+                    rdma_x_scales[0] = scale_inv;
+                }
+
+                for (int i = thread_id; i < hidden_bf16_int4; i += num_threads) {
+                    // Read
+                    auto int4_value = __ldg(x_int4 + i);
+                    auto bf16_values = reinterpret_cast<hip_bfloat16*>(&int4_value);
+
+                    // Cast into send buffer
+                    vec_t int2_value;
+                    auto int8_values = reinterpret_cast<int8_t*>(&int2_value);
+#pragma unroll
+                    for (int j = 0; j < kNumElemsPerRead; ++ j) {
+                        auto fp32_value = static_cast<float>(bf16_values[j]);
+                        auto fp32_value_scaled = fp32_value * scale;
+                        int8_values[j] = static_cast<int8_t>(nearbyintf(fp32_value_scaled));
+                    }
+                    rdma_x_vec[i] = int2_value;
+                }
+                __syncthreads();
+            }
+
             // Issue IBGDA sends
             if (dst_expert_idx >= 0) {
                 int slot_idx = lane_id == 0 ? atomicAdd(atomic_counter_per_expert + dst_expert_idx, 1) : 0;
@@ -339,9 +395,10 @@ LOW_LATENCY_DISPATCH_RECV:
                                  local_expert_idx * num_ranks * num_max_dispatch_tokens_per_rank * hidden_int4;
         const auto recv_src_info = packed_recv_src_info + local_expert_idx * num_ranks * num_max_dispatch_tokens_per_rank;
         const auto recv_range = packed_recv_layout_range + local_expert_idx * num_ranks;
-        const auto num_aligned_scales = ALIGN<int>(num_scales, sizeof(float) / sizeof(scale_t));
+        const auto num_aligned_scales = ALIGN<int>(kNumScales, sizeof(float) / sizeof(scale_t));
         const auto recv_x_scales = static_cast<scale_t*>(packed_recv_x_scales) +
-                                   local_expert_idx * num_ranks * num_max_dispatch_tokens_per_rank * num_aligned_scales;
+                                   local_expert_idx * num_ranks * num_max_dispatch_tokens_per_rank *
+                                       (kUseInt8 ? 1 : num_aligned_scales);
 
         // Shared between sub-warps in warp groups
         __shared__ int shared_num_recv_tokens[kNumMaxWarpGroups], shared_recv_token_begin_idx[kNumMaxWarpGroups];
@@ -362,8 +419,7 @@ LOW_LATENCY_DISPATCH_RECV:
 
         // no needs to reset because there is no iteration
         if (lane_id == 0){
-            // volatile int ret = __hip_atomic_fetch_add(&sync_large_warp_counters[warp_group_id], 1, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_WORKGROUP);
-            volatile int ret = atomicAdd((int*)&sync_large_warp_counters[warp_group_id], 1);
+            volatile int ret = __hip_atomic_fetch_add(&sync_large_warp_counters[warp_group_id], 1, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_WORKGROUP);
         }
         syncwarp();
 
@@ -372,7 +428,7 @@ LOW_LATENCY_DISPATCH_RECV:
         recv_token_begin_idx = shared_recv_token_begin_idx[warp_group_id];
 
         // Copy tokens
-        EP_DEVICE_ASSERT(num_scales <= 64);
+        EP_DEVICE_ASSERT(kNumScales <= 64);
         for (int i = sub_warp_id; i < num_recv_tokens; i += num_warps_per_group) {
             // Copy source info
             const auto src_src_idx = reinterpret_cast<int*>(rdma_recv_x_uint8 + i * num_bytes_per_msg);
@@ -387,24 +443,30 @@ LOW_LATENCY_DISPATCH_RECV:
             UNROLLED_WARP_COPY_LL(7, lane_id, hidden_int4, dst_data, src_data, ld_nc_global, st_na_global);
 
             // Copy scales
-            if (kUseFP8) {
+            if constexpr(kUseFP8) {
                 const auto src_scales = reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(src_data) + hidden_bytes);
                 const auto num_elems_per_pack = static_cast<int>(sizeof(packed_t) / sizeof(scale_t));
                 const auto token_idx = recv_token_begin_idx + i;
                 const auto token_stride = num_elems_per_pack;
                 const auto pack_stride = num_ranks * num_max_dispatch_tokens_per_rank * num_elems_per_pack;
 
-                if (lane_id < num_scales) {
-                    const auto pack_idx = lane_id / num_elems_per_pack;
-                    const auto elem_idx = lane_id % num_elems_per_pack;
-                    auto scale = extract_required_scale_format<kUseUE8M0>(ld_nc_global(src_scales + lane_id));
-                    recv_x_scales[token_idx * token_stride + pack_idx * pack_stride + elem_idx] = scale;
-                }
-                if (lane_id + kWarpSize < num_scales) {
-                    const auto pack_idx = (lane_id + kWarpSize) / num_elems_per_pack;
-                    const auto elem_idx = (lane_id + kWarpSize) % num_elems_per_pack;
-                    auto scale = extract_required_scale_format<kUseUE8M0>(ld_nc_global(src_scales + lane_id + kWarpSize));
-                    recv_x_scales[token_idx * token_stride + pack_idx * pack_stride + elem_idx] = scale;
+                if constexpr(kUseInt8) {
+                    if (lane_id == 0) {
+                        recv_x_scales[token_idx] = ld_nc_global(src_scales);
+                    }
+                } else {
+                    if (lane_id < kNumScales) {
+                        const auto pack_idx = lane_id / num_elems_per_pack;
+                        const auto elem_idx = lane_id % num_elems_per_pack;
+                        auto scale = extract_required_scale_format<kUseUE8M0>(ld_nc_global(src_scales + lane_id));
+                        recv_x_scales[token_idx * token_stride + pack_idx * pack_stride + elem_idx] = scale;
+                    }
+                    if (lane_id + kWarpSize < kNumScales) {
+                        const auto pack_idx = (lane_id + kWarpSize) / num_elems_per_pack;
+                        const auto elem_idx = (lane_id + kWarpSize) % num_elems_per_pack;
+                        auto scale = extract_required_scale_format<kUseUE8M0>(ld_nc_global(src_scales + lane_id + kWarpSize));
+                        recv_x_scales[token_idx * token_stride + pack_idx * pack_stride + elem_idx] = scale;
+                    }
                 }
             }
         }
@@ -420,7 +482,7 @@ void dispatch(void* packed_recv_x, void* packed_recv_x_scales,
               int64_t* next_clean, int num_next_clean_int,
               int num_tokens, int hidden, int num_max_dispatch_tokens_per_rank,
               int num_topk, int num_experts, int rank, int num_ranks,
-              bool use_fp8, bool round_scale, bool use_ue8m0,
+              bool use_fp8, bool round_scale, bool use_ue8m0, bool use_int8,
               void* workspace, int num_device_sms,
               hipStream_t stream, int phases) {
     constexpr int kNumMaxTopK = 11;
@@ -439,11 +501,13 @@ void dispatch(void* packed_recv_x, void* packed_recv_x_scales,
     EP_HOST_ASSERT(num_experts * sizeof(int) * 2 <= NUM_WORKSPACE_BYTES);
 
 #define DISPATCH_LAUNCH_CASE(hidden) { \
-auto dispatch_func = dispatch<false, false, hidden>; \
-if (use_fp8 and not use_ue8m0)                       \
-    dispatch_func = dispatch<true, false, hidden>;   \
-if (use_fp8 and use_ue8m0)                           \
-    dispatch_func = dispatch<true, true, hidden>;    \
+auto dispatch_func = dispatch<false, false, false, hidden>; \
+if (use_fp8 and not use_ue8m0)             \
+    dispatch_func = dispatch<true, false, false, hidden>;   \
+if (use_fp8 and use_ue8m0)             \
+    dispatch_func = dispatch<true, true, false, hidden>;    \
+if (use_int8)             \
+    dispatch_func = dispatch<true, false, true, hidden>;    \
 LAUNCH_KERNEL_NON_COOPERATIVE(&cfg, dispatch_func, \
               packed_recv_x, packed_recv_x_scales, \
               packed_recv_src_info, packed_recv_layout_range, \
@@ -575,8 +639,7 @@ combine(void* combined_x,
         // Put finishing flag
         EP_DEVICE_ASSERT(num_warps_per_group > 1);
         if (lane_id == 0){
-            // volatile int ret = __hip_atomic_fetch_add(&sync_large_warp_counters[warp_group_id], 1,__ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_WORKGROUP);
-            volatile int ret = atomicAdd((int*)&sync_large_warp_counters[warp_group_id], 1);
+            volatile int ret = __hip_atomic_fetch_add(&sync_large_warp_counters[warp_group_id], 1,__ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_WORKGROUP);
         }
         syncwarp();
         while (sync_large_warp_counters[warp_group_id] < num_warps_per_group);

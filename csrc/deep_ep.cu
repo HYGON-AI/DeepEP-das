@@ -1293,7 +1293,7 @@ void Buffer::clean_low_latency_buffer(int num_max_dispatch_tokens_per_rank, int 
 std::tuple<torch::Tensor, std::optional<torch::Tensor>, torch::Tensor, torch::Tensor, torch::Tensor, std::optional<EventHandle>, std::optional<std::function<void()>>>
 Buffer::low_latency_dispatch(const torch::Tensor& x, const torch::Tensor& topk_idx,
                              int num_max_dispatch_tokens_per_rank, int num_experts,
-                             bool use_fp8, bool round_scale, bool use_ue8m0, 
+                             bool use_fp8, bool round_scale, bool use_ue8m0, bool use_int8,
                              bool async, bool return_recv_hook) {
     EP_HOST_ASSERT(low_latency_mode);
 
@@ -1316,13 +1316,8 @@ Buffer::low_latency_dispatch(const torch::Tensor& x, const torch::Tensor& topk_i
     auto buffer = layout.buffers[low_latency_buffer_idx];
     auto next_buffer = layout.buffers[low_latency_buffer_idx ^= 1];
 
-    // Buffer control
-    LowLatencyLayout nvl_layout(nvl_buffer_ptrs[nvl_rank], num_max_dispatch_tokens_per_rank, hidden, num_ranks, num_experts);
-    EP_HOST_ASSERT(nvl_layout.total_bytes <= num_rdma_bytes);
-    auto nvl_buffer = nvl_layout.buffers[low_latency_buffer_idx ^= 1];
-    auto nvl_next_buffer = nvl_layout.buffers[low_latency_buffer_idx ^= 1];
     auto global_atomic_counter = torch::zeros({1}, torch::dtype(torch::kInt32).device(torch::kCUDA));
-	
+
     // Wait previous tasks to be finished
     // NOTES: the hook mode will always use the default stream
     auto compute_stream = at::hip::getCurrentHIPStreamMasqueradingAsCUDA();
@@ -1333,7 +1328,7 @@ Buffer::low_latency_dispatch(const torch::Tensor& x, const torch::Tensor& topk_i
 
     // Allocate packed tensors
     auto packed_recv_x = torch::empty({num_local_experts, num_ranks * num_max_dispatch_tokens_per_rank, hidden},
-                                      x.options().dtype(use_fp8 ? torch::kFloat8_e4m3fnuz: torch::kBFloat16));
+                                      x.options().dtype(use_int8 ? torch::kInt8 : use_fp8 ? torch::kFloat8_e4m3fnuz: torch::kBFloat16));
     auto packed_recv_src_info = torch::empty({num_local_experts, num_ranks * num_max_dispatch_tokens_per_rank}, torch::dtype(torch::kInt32).device(torch::kCUDA));
     auto packed_recv_layout_range = torch::empty({num_local_experts, num_ranks}, torch::dtype(torch::kInt64).device(torch::kCUDA));
     auto packed_recv_count = torch::empty({num_local_experts}, torch::dtype(torch::kInt32).device(torch::kCUDA));
@@ -1345,13 +1340,18 @@ Buffer::low_latency_dispatch(const torch::Tensor& x, const torch::Tensor& topk_i
         EP_HOST_ASSERT((num_ranks * num_max_dispatch_tokens_per_rank) % 4 == 0 and "TMA requires the number of tokens to be multiple of 4");
         // TODO: support unaligned cases
         EP_HOST_ASSERT(hidden % (FP8_QUANTIZATION_NUM_PER_CHANNEL * 4) == 0);
-        if (not use_ue8m0) {
-            packed_recv_x_scales = torch::empty({num_local_experts, hidden / FP8_QUANTIZATION_NUM_PER_CHANNEL, num_ranks * num_max_dispatch_tokens_per_rank},
-                                                torch::dtype(torch::kFloat32).device(torch::kCUDA));
-        } else {
+        EP_HOST_ASSERT(!(use_ue8m0 && use_int8));
+
+        if (use_ue8m0) {
             EP_HOST_ASSERT(round_scale);
             packed_recv_x_scales = torch::empty({num_local_experts, hidden / (FP8_QUANTIZATION_NUM_PER_CHANNEL * 4), num_ranks * num_max_dispatch_tokens_per_rank},
                                                 torch::dtype(torch::kInt).device(torch::kCUDA));
+        } else if (use_int8) {
+            packed_recv_x_scales = torch::empty({num_local_experts, 1, num_ranks * num_max_dispatch_tokens_per_rank},
+                                                torch::dtype(torch::kFloat32).device(torch::kCUDA));
+        } else {
+            packed_recv_x_scales = torch::empty({num_local_experts, hidden / FP8_QUANTIZATION_NUM_PER_CHANNEL, num_ranks * num_max_dispatch_tokens_per_rank},
+                                                torch::dtype(torch::kFloat32).device(torch::kCUDA));
         }
         packed_recv_x_scales = torch::transpose(packed_recv_x_scales.value(), 1, 2);
         packed_recv_x_scales_ptr = packed_recv_x_scales->data_ptr();
@@ -1369,8 +1369,8 @@ Buffer::low_latency_dispatch(const torch::Tensor& x, const torch::Tensor& topk_i
                             x.data_ptr(), topk_idx.data_ptr<int64_t>(),
                             next_clean_meta.first, next_clean_meta.second,
                             num_tokens, hidden, num_max_dispatch_tokens_per_rank,
-                            num_topk, num_experts, rank, num_ranks, 
-                            use_fp8, round_scale, use_ue8m0,
+                            num_topk, num_experts, rank, num_ranks,
+                            use_fp8, round_scale, use_ue8m0, use_int8,
                             workspace, num_device_sms, launch_stream, phases);
     };
     launcher(return_recv_hook ? LOW_LATENCY_SEND_PHASE : (LOW_LATENCY_SEND_PHASE | LOW_LATENCY_RECV_PHASE));
@@ -1427,12 +1427,6 @@ Buffer::low_latency_combine(const torch::Tensor& x, const torch::Tensor& topk_id
     EP_HOST_ASSERT(layout.total_bytes <= num_rdma_bytes);
     auto buffer = layout.buffers[low_latency_buffer_idx];
     auto next_buffer = layout.buffers[low_latency_buffer_idx ^= 1];
-    
-    // Buffer control
-    LowLatencyLayout nvl_layout(nvl_buffer_ptrs[nvl_rank], num_max_dispatch_tokens_per_rank, hidden, num_ranks, num_experts);
-    EP_HOST_ASSERT(nvl_layout.total_bytes <= num_rdma_bytes);
-    auto nvl_buffer = nvl_layout.buffers[low_latency_buffer_idx ^= 1];
-    auto nvl_next_buffer = nvl_layout.buffers[low_latency_buffer_idx ^= 1];
 
     // Wait previous tasks to be finished
     // NOTES: the hook mode will always use the default stream

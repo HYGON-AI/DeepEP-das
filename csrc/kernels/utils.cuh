@@ -184,9 +184,8 @@ __device__ __forceinline__ int64_t ld_acquire_global(const int64_t *ptr) {
 
 __device__ __forceinline__ int atomic_add_release_global(const int *ptr, int value) {
     int ret;
-    // ret = __hip_atomic_fetch_add(const_cast<int *>(ptr), value, __ATOMIC_RELEASE,
-    //                              __HIP_MEMORY_SCOPE_AGENT);
-    ret = atomicAdd((int*)ptr, value);
+    ret = __hip_atomic_fetch_add(const_cast<int *>(ptr), value, __ATOMIC_RELEASE, __HIP_MEMORY_SCOPE_AGENT);
+    // ret = atomicAdd((int*)ptr, value);
     return ret;
 }
 
@@ -342,15 +341,10 @@ __device__ __forceinline__ dtype_t broadcast(dtype_t &ptr, int src_lane_idx) {
     return *reinterpret_cast<dtype_t *>(recv_int_values);
 }
 
-#ifndef FORCE_NVSHMEM_API
 constexpr float kFP8Margin = 1e-4;
 constexpr float kFinfoAmaxE4M3 = 240.0f;
 constexpr float kFinfoAmaxInvE4M3 = 1.0f / kFinfoAmaxE4M3;
-#else
-constexpr float kFP8Margin = 1e-4;
-constexpr float kFinfoAmaxE4M3 = 448.0f;
-constexpr float kFinfoAmaxInvE4M3 = 1.0f / kFinfoAmaxE4M3;
-#endif
+constexpr float kInt8Amax = 127.0f;
 
 __forceinline__ __device__ float fast_pow2(int x) {
     // We can ensure `-126 <= x and x <= 127`
@@ -374,6 +368,11 @@ __forceinline__ __device__ void calculate_fp8_scales(float amax, float& scale, f
         scale_inv = amax * kFinfoAmaxInvE4M3;
         scale = kFinfoAmaxE4M3 / amax;
     }
+}
+
+__forceinline__ __device__ void calculate_int8_scales(float amax, float& scale, float& scale_inv) {
+    scale = kInt8Amax / amax;
+    scale_inv = amax / kInt8Amax;
 }
 
 template <bool kIsUE8M0, typename out_dtype_t = std::conditional_t<kIsUE8M0, uint8_t, float>>

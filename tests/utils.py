@@ -73,6 +73,29 @@ def per_token_cast_back(x_fp8: torch.Tensor, x_scales: torch.Tensor):
     return (x_fp32_padded * x_scales).view(x_fp8_padded.shape).to(torch.bfloat16)[:,:n].contiguous()
 
 
+def per_token_cast_back_int8(x_int8: torch.Tensor, x_scales: torch.Tensor):
+    """
+    x_int8: [m, n] int8 tensor
+    x_scales: [m, n] 或 [m, 1] 或 [m, n/128] 量化 scale float
+    return: [m, n] bf16 tensor
+    """
+    if x_int8.numel() == 0:
+        return x_int8.to(torch.bfloat16)
+
+    assert x_int8.dim() == 2
+    m, n = x_int8.shape
+    aligned_n = align_up(n, 128)
+
+    x_int8_padded = torch.nn.functional.pad(
+        x_int8, (0, aligned_n - n), mode='constant', value=0
+    )
+    x_fp32_padded = x_int8_padded.to(torch.float32).view(m, -1, 1)
+    x_scales = x_scales.view(m, -1, 1).to(torch.float32)
+    # print(f'x_int8.shape: {x_int8.shape}, x_fp32_padded: {x_fp32_padded.shape}, x_scales: {x_scales.shape}')
+    x_deq = (x_fp32_padded * x_scales).view(m, aligned_n)
+    return x_deq[:, :n].to(torch.bfloat16).contiguous()
+
+
 def inplace_unique(x: torch.Tensor, num_slots: int):
     assert x.dim() == 2
     mask = x < 0
