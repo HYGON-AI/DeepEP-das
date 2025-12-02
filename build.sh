@@ -19,11 +19,6 @@ if [ -d "${llvm18_path}" ]; then
     llvm_path=${llvm18_path}
 fi
 
-if [ ! -d "third-party/rocshmem/src/" ]; then
-    echo "download submodule..."
-    git submodule update --recursive --init
-fi
-
 src_path=$(dirname "$(realpath $0)")
 
 if [ ! -d "build_" ]; then
@@ -33,8 +28,22 @@ fi
 PYTHON_INCLUDE=$(python3 -c "from sysconfig import get_paths; print(get_paths()['include'])")
 PYTHON_PLATLIB=$(python3 -c "from sysconfig import get_paths; print(get_paths()['platlib'])")
 
-USE_NVSHMEM=${USE_NVSHMEM:=OFF}
-USE_ROCSHMEM=${USE_ROCSHMEM:=ON}
+USE_NVSHMEM=OFF
+USE_ROCSHMEM=OFF
+case "$1" in
+    rocshmem)
+        USE_ROCSHMEM=ON
+        ;;
+    nvshmem|dushmem)
+        USE_NVSHMEM=ON
+        ;;
+    *)
+        echo "Usage: $0 [rocshmem|nvshmem]"
+        exit 1
+        ;;
+esac
+echo "USE_NVSHMEM=$USE_NVSHMEM"
+echo "USE_ROCSHMEM=$USE_ROCSHMEM"
 
 # -------------------------- With rocSHMEM -------------------------- #
 build_rocshmem()
@@ -55,27 +64,55 @@ build_rocshmem()
 }
 
 if [ "$USE_ROCSHMEM" == "ON" ]; then
-    if [ ! -d "third-party/rocshmem_dir" ]; then
-        mkdir -p third-party/rocshmem_dir
+    if [ ! -d "third-party/rocshmem/src/" ]; then
+        echo "download submodule..."
+        git submodule update --init third-party/rocshmem
     fi
+
+    if [ ! -d "third-party/rocshmem_install" ]; then
+        mkdir -p third-party/rocshmem_install
+    fi
+
     build_rocshmem
-    SHMEM_INSTALL_PREFIX=$(pwd)/third-party/rocshmem_dir
+    SHMEM_INSTALL_PREFIX=$(pwd)/third-party/rocshmem_install
     COMPILE_OPTIONS=${COMPILE_OPTIONS:= -fPIC -D__HIP_PLATFORM_AMD__=1 -DUSE_ROCM=1 -DHIPBLAS_V2 -DCUDA_HAS_FP16=1 -O3 -fgpu-rdc -DTORCH_API_INCLUDE_EXTENSION_H '-DPYBIND11_COMPILER_TYPE="_gcc"' '-DPYBIND11_STDLIB="_libstdcpp"' '-DPYBIND11_BUILD_ABI="_cxxabi1014"' -DTORCH_EXTENSION_NAME=deep_ep_cpp -D_GLIBCXX_USE_CXX11_ABI=1 --offload-arch=gfx936 -std=c++17 -Wno-return-type}
     SHMEM_LINK_OPTIONS=${SHMEM_LINK_OPTIONS:="-Wl,-rpath,${SHMEM_INSTALL_PREFIX}/lib/ -l:librocshmem.a"}
 fi
 # -------------------------- rocSHMEM END -------------------------- #
 # -------------------------- With duSHMEM -------------------------- #
-# build_dushmem() # TODO
-# {
-# 
-# }
-if [ "$USE_NVSHMEM" == "ON" ]; then
-    if [ ! -d "dushmem_dir" ]; then
-        mkdir -p dushmem_dir
+build_dushmem()
+{
+    cd third-party/dushmem-hip/
+    source env.build.sh
+    export CMAKE_PREFIX_PATH=${ROCM_PATH}/lib/cmake/amd_comgr:${ROCM_PATH}/lib64/cmake/amd_comgr:${CMAKE_PREFIX_PATH:-}
+    export NVSHMEM_PREFIX=$src_path/third-party/dushmem_install
+    if [ ! -d "build" ]; then
+        mkdir -p build
     fi
-    # build_dushmem() #TODO
+    cd build || {
+        echo "错误: 无法进入构建目录 '$build_dir'"
+        cd "$src_path"
+        return 1
+    }
+    echo "cd third-party/dushmem-hip/build"
+    cmake ../
+    make -j64
+    make install
+    echo "编译dushmem-hip成功"
+    cd "$src_path"
+}
+if [ "$USE_NVSHMEM" == "ON" ]; then
+    if [ ! -d "third-party/dushmem-hip/src/" ]; then
+        echo "download submodule..."
+        git submodule update --init third-party/dushmem-hip
+    fi
+
+    if [ ! -d "third-party/dushmem_install" ]; then
+        mkdir -p third-party/dushmem_install
+    fi
+    build_dushmem
+    SHMEM_INSTALL_PREFIX=$(pwd)/third-party/dushmem_install
     COMPILE_OPTIONS=${COMPILE_OPTIONS:= -fPIC -DFORCE_NVSHMEM_API -D__HIP_PLATFORM_AMD__=1 -DUSE_ROCM=1 -DHIPBLAS_V2 -DCUDA_HAS_FP16=1 -O3 -fgpu-rdc -DTORCH_API_INCLUDE_EXTENSION_H '-DPYBIND11_COMPILER_TYPE="_gcc"' '-DPYBIND11_STDLIB="_libstdcpp"' '-DPYBIND11_BUILD_ABI="_cxxabi1014"' -DTORCH_EXTENSION_NAME=deep_ep_cpp -D_GLIBCXX_USE_CXX11_ABI=1 --offload-arch=gfx936 -std=c++17 -Wno-return-type}
-    SHMEM_INSTALL_PREFIX=${SHMEM_INSTALL_PREFIX:=$(pwd)/dushmem_dir}
     SHMEM_LINK_OPTIONS="-Wl,-rpath,${SHMEM_INSTALL_PREFIX}/lib/ -l:libnvshmem_device.a -lnvshmem_host"
 fi
 # -------------------------- duSHMEM END -------------------------- #
