@@ -399,7 +399,7 @@ dispatch(int4 *recv_x, float *recv_x_scales, int64_t *recv_topk_idx, float *recv
         kForwarderCoordinator,  // 向远端RDMA确认接收
         kNVLReceivers           // 从nvl缓存写入到recv_x
     };
-#if !defined(FORCE_NVSHMEM_API) || !defined(ROCM_DISABLE_CTX)
+#if !defined(FORCE_NVSHMEM_API) && !defined(ROCM_DISABLE_CTX)
     __shared__ shmem_ctx_t ctx;
     shmem_wg_ctx_create(&ctx);
 #endif
@@ -516,7 +516,7 @@ dispatch(int4 *recv_x, float *recv_x_scales, int64_t *recv_topk_idx, float *recv
 
             syncwarp();
             if (dst_rdma_rank != rdma_rank) {
-#if !defined(FORCE_NVSHMEM_API) || !defined(ROCM_DISABLE_CTX)
+#if !defined(FORCE_NVSHMEM_API) && !defined(ROCM_DISABLE_CTX)
                 shmem_ctx_int_put_nbi_warp(ctx, 
 #else
                 shmemx_int_put_nbi_warp(
@@ -527,7 +527,7 @@ dispatch(int4 *recv_x, float *recv_x_scales, int64_t *recv_topk_idx, float *recv
             }
         }
 
-#if !defined(FORCE_NVSHMEM_API) || !defined(ROCM_DISABLE_CTX)
+#if !defined(FORCE_NVSHMEM_API) && !defined(ROCM_DISABLE_CTX)
         shmem_ctx_quiet(ctx);                
 #else
         shmem_fence();
@@ -741,7 +741,7 @@ dispatch(int4 *recv_x, float *recv_x_scales, int64_t *recv_topk_idx, float *recv
                 if(dst_rdma_rank != rdma_rank) {
                     auto dst_slot_idx = synced_last_issued_tail % num_max_rdma_chunked_recv_tokens;
                     EP_DEVICE_ASSERT(dst_slot_idx + num_tokens_to_issue <= num_max_rdma_chunked_recv_tokens);
-#if !defined(FORCE_NVSHMEM_API) || !defined(ROCM_DISABLE_CTX)
+#if !defined(FORCE_NVSHMEM_API) && !defined(ROCM_DISABLE_CTX)
                     shmem_ctx_schar_put_nbi_warp(ctx,
 #else
                     shmemx_int8_put_nbi_warp(
@@ -752,7 +752,7 @@ dispatch(int4 *recv_x, float *recv_x_scales, int64_t *recv_topk_idx, float *recv
                             dst_slot_idx * num_bytes_per_rdma_token,
                         num_bytes_per_rdma_token * num_tokens_to_issue,
                         translate_dst_rdma_rank<kLowLatencyMode>(dst_rdma_rank, nvl_rank));
-#if !defined(FORCE_NVSHMEM_API) || !defined(ROCM_DISABLE_CTX)
+#if !defined(FORCE_NVSHMEM_API) && !defined(ROCM_DISABLE_CTX)
                     shmem_ctx_quiet(ctx);                
 #else
                     shmem_fence();
@@ -768,7 +768,7 @@ dispatch(int4 *recv_x, float *recv_x_scales, int64_t *recv_topk_idx, float *recv
                     last_issued_tail += num_tokens_to_issue;
                     num_tokens_to_send -= num_tokens_to_issue;
                     // 更新远端rdma 己方已发送的token数，用于做发送信息同步。用于与kRDMAAndNVLForwarder互相通信
-#if !defined(FORCE_NVSHMEM_API) || !defined(ROCM_DISABLE_CTX)
+#if !defined(FORCE_NVSHMEM_API) && !defined(ROCM_DISABLE_CTX)
                     shmem_ctx_ulong_atomic_add(ctx,
 #else
                     shmem_signal_op_add(
@@ -1008,7 +1008,7 @@ dispatch(int4 *recv_x, float *recv_x_scales, int64_t *recv_topk_idx, float *recv
 
             // 更新远程头部
             if(min_head != std::numeric_limits<int>::max() && min_head >= last_head + num_max_rdma_chunked_send_tokens && lane_id < kNumRDMARanks){
-#if !defined(FORCE_NVSHMEM_API) || !defined(ROCM_DISABLE_CTX)
+#if !defined(FORCE_NVSHMEM_API) && !defined(ROCM_DISABLE_CTX)
                 shmem_ctx_ulong_atomic_add(ctx,
 #else
                 shmem_signal_op_add(
@@ -1127,7 +1127,7 @@ dispatch(int4 *recv_x, float *recv_x_scales, int64_t *recv_topk_idx, float *recv
             }
         } // while(num_tokens_to_recv > 0)
     }
-#if !defined(FORCE_NVSHMEM_API) || !defined(ROCM_DISABLE_CTX)
+#if !defined(FORCE_NVSHMEM_API) && !defined(ROCM_DISABLE_CTX)
     shmem_wg_ctx_destroy(&ctx);
 #endif
 }
@@ -1417,7 +1417,7 @@ combine(int4 *combined_x, float *combined_topk_weights, const bool *is_combined_
         kRDMACoordinator,
         kNVLCoordinator
     };
-#if !defined(FORCE_NVSHMEM_API) || !defined(ROCM_DISABLE_CTX)
+#if !defined(FORCE_NVSHMEM_API) && !defined(ROCM_DISABLE_CTX)
     __shared__ shmem_ctx_t ctx;
     shmem_wg_ctx_create(&ctx);
 #endif
@@ -1744,7 +1744,7 @@ combine(int4 *combined_x, float *combined_topk_weights, const bool *is_combined_
                 if(sub_warp_id == kNumWarpsPerForwarder - 1) {
                     if(dst_rdma_rank != rdma_rank) {
                         auto rdma_slot_idx = token_start_idx % num_max_rdma_chunked_recv_tokens;
-#if !defined(FORCE_NVSHMEM_API) || !defined(ROCM_DISABLE_CTX)
+#if !defined(FORCE_NVSHMEM_API) && !defined(ROCM_DISABLE_CTX)
                         shmem_ctx_schar_put_nbi_warp(ctx,
 #else
                         shmemx_int8_put_nbi_warp(
@@ -1755,7 +1755,7 @@ combine(int4 *combined_x, float *combined_topk_weights, const bool *is_combined_
                                 rdma_slot_idx * num_bytes_per_rdma_token,
                             num_chunked_tokens * num_bytes_per_rdma_token,
                             translate_dst_rdma_rank<kLowLatencyMode>(dst_rdma_rank, nvl_rank));
-#if !defined(FORCE_NVSHMEM_API) || !defined(ROCM_DISABLE_CTX)
+#if !defined(FORCE_NVSHMEM_API) && !defined(ROCM_DISABLE_CTX)
                         shmem_ctx_quiet(ctx);                
 #else
                         shmem_fence();
@@ -1767,7 +1767,7 @@ combine(int4 *combined_x, float *combined_topk_weights, const bool *is_combined_
                     // Write new RDMA tail
                     syncwarp();
                     if(lane_id == 0) {
-#if !defined(FORCE_NVSHMEM_API) || !defined(ROCM_DISABLE_CTX)
+#if !defined(FORCE_NVSHMEM_API) && !defined(ROCM_DISABLE_CTX)
                         shmem_ctx_ulong_atomic_add(ctx,
 #else
                         shmem_signal_op_add(
@@ -1900,7 +1900,7 @@ combine(int4 *combined_x, float *combined_topk_weights, const bool *is_combined_
                             min_head = min(min_head, rdma_receiver_rdma_head[i][dst_rdma_rank]);
 
                     if (min_head != std::numeric_limits<int>::max() and min_head >= last_rdma_head + num_max_rdma_chunked_send_tokens and lane_id < kNumRDMARanks) {
-#if !defined(FORCE_NVSHMEM_API) || !defined(ROCM_DISABLE_CTX)
+#if !defined(FORCE_NVSHMEM_API) && !defined(ROCM_DISABLE_CTX)
                         shmem_ctx_ulong_atomic_add(ctx,
 #else
                         shmem_signal_op_add(
@@ -1917,7 +1917,7 @@ combine(int4 *combined_x, float *combined_topk_weights, const bool *is_combined_
             }
         }
     }
-#if !defined(FORCE_NVSHMEM_API) || !defined(ROCM_DISABLE_CTX)
+#if !defined(FORCE_NVSHMEM_API) && !defined(ROCM_DISABLE_CTX)
     shmem_wg_ctx_destroy(&ctx);
 #endif
 }

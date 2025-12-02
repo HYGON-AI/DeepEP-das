@@ -107,7 +107,7 @@ __device__ inline void shmemx_int8_put_nbi_warp(
     rocshmem::rocshmem_schar_put_nbi_wave(dest, source, nelems, pe);
 }
 
-__device__ inline void shmem_signal_op_add(uint64_t *dest, uint64_t value, int pe) {}
+__device__ inline void shmem_signal_op_add(uint64_t *dest, uint64_t value, int pe) {
     rocshmem::rocshmem_ulong_atomic_add(dest, value, pe);
 }
 
