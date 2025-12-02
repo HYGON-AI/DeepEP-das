@@ -30,6 +30,7 @@ PYTHON_PLATLIB=$(python3 -c "from sysconfig import get_paths; print(get_paths()[
 
 USE_NVSHMEM=OFF
 USE_ROCSHMEM=OFF
+ROCM_DISABLE_CTX=OFF
 case "$1" in
     rocshmem)
         USE_ROCSHMEM=ON
@@ -38,12 +39,16 @@ case "$1" in
         USE_NVSHMEM=ON
         ;;
     *)
-        echo "Usage: $0 [rocshmem|nvshmem]"
+        echo "Usage: ./build.sh rocshmem [ROCM_DISABLE_CTX] / ./build.sh nvshmem"
         exit 1
         ;;
 esac
+if [ "${2:-}" = "ROCM_DISABLE_CTX" ]; then
+    ROCM_DISABLE_CTX=ON
+fi
 echo "USE_NVSHMEM=$USE_NVSHMEM"
 echo "USE_ROCSHMEM=$USE_ROCSHMEM"
+echo "ROCM_DISABLE_CTX=$ROCM_DISABLE_CTX"
 
 # -------------------------- With rocSHMEM -------------------------- #
 build_rocshmem()
@@ -75,7 +80,10 @@ if [ "$USE_ROCSHMEM" == "ON" ]; then
 
     build_rocshmem
     SHMEM_INSTALL_PREFIX=$(pwd)/third-party/rocshmem_install
-    COMPILE_OPTIONS=${COMPILE_OPTIONS:= -fPIC -D__HIP_PLATFORM_AMD__=1 -DUSE_ROCM=1 -DHIPBLAS_V2 -DCUDA_HAS_FP16=1 -O3 -fgpu-rdc -DTORCH_API_INCLUDE_EXTENSION_H '-DPYBIND11_COMPILER_TYPE="_gcc"' '-DPYBIND11_STDLIB="_libstdcpp"' '-DPYBIND11_BUILD_ABI="_cxxabi1014"' -DTORCH_EXTENSION_NAME=deep_ep_cpp -D_GLIBCXX_USE_CXX11_ABI=1 --offload-arch=gfx936 -std=c++17 -Wno-return-type}
+    if [ "$ROCM_DISABLE_CTX" == "ON" ]; then
+        COMPILE_OPTIONS=${COMPILE_OPTIONS:= -fPIC -DROCM_DISABLE_CTX -D__HIP_PLATFORM_AMD__=1 -DUSE_ROCM=1 -DHIPBLAS_V2 -DCUDA_HAS_FP16=1 -O3 -fgpu-rdc -DTORCH_API_INCLUDE_EXTENSION_H '-DPYBIND11_COMPILER_TYPE="_gcc"' '-DPYBIND11_STDLIB="_libstdcpp"' '-DPYBIND11_BUILD_ABI="_cxxabi1014"' -DTORCH_EXTENSION_NAME=deep_ep_cpp -D_GLIBCXX_USE_CXX11_ABI=1 --offload-arch=gfx936 -std=c++17 -Wno-return-type}
+    else
+        COMPILE_OPTIONS=${COMPILE_OPTIONS:= -fPIC -D__HIP_PLATFORM_AMD__=1 -DUSE_ROCM=1 -DHIPBLAS_V2 -DCUDA_HAS_FP16=1 -O3 -fgpu-rdc -DTORCH_API_INCLUDE_EXTENSION_H '-DPYBIND11_COMPILER_TYPE="_gcc"' '-DPYBIND11_STDLIB="_libstdcpp"' '-DPYBIND11_BUILD_ABI="_cxxabi1014"' -DTORCH_EXTENSION_NAME=deep_ep_cpp -D_GLIBCXX_USE_CXX11_ABI=1 --offload-arch=gfx936 -std=c++17 -Wno-return-type}
     SHMEM_LINK_OPTIONS=${SHMEM_LINK_OPTIONS:="-Wl,-rpath,${SHMEM_INSTALL_PREFIX}/lib/ -l:librocshmem.a"}
 fi
 # -------------------------- rocSHMEM END -------------------------- #
@@ -112,7 +120,7 @@ if [ "$USE_NVSHMEM" == "ON" ]; then
     fi
     build_dushmem
     SHMEM_INSTALL_PREFIX=$(pwd)/third-party/dushmem_install
-    COMPILE_OPTIONS=${COMPILE_OPTIONS:= -fPIC -DFORCE_NVSHMEM_API -D__HIP_PLATFORM_AMD__=1 -DUSE_ROCM=1 -DHIPBLAS_V2 -DCUDA_HAS_FP16=1 -O3 -fgpu-rdc -DTORCH_API_INCLUDE_EXTENSION_H '-DPYBIND11_COMPILER_TYPE="_gcc"' '-DPYBIND11_STDLIB="_libstdcpp"' '-DPYBIND11_BUILD_ABI="_cxxabi1014"' -DTORCH_EXTENSION_NAME=deep_ep_cpp -D_GLIBCXX_USE_CXX11_ABI=1 --offload-arch=gfx936 -std=c++17 -Wno-return-type}
+    COMPILE_OPTIONS=${COMPILE_OPTIONS:= -fPIC -DFORCE_NVSHMEM_API -DHIP_ENABLE_WARP_SYNC_BUILTINS -D__HIP_PLATFORM_AMD__=1 -DUSE_ROCM=1 -DHIPBLAS_V2 -DCUDA_HAS_FP16=1 -O3 -fgpu-rdc -DTORCH_API_INCLUDE_EXTENSION_H '-DPYBIND11_COMPILER_TYPE="_gcc"' '-DPYBIND11_STDLIB="_libstdcpp"' '-DPYBIND11_BUILD_ABI="_cxxabi1014"' -DTORCH_EXTENSION_NAME=deep_ep_cpp -D_GLIBCXX_USE_CXX11_ABI=1 --offload-arch=gfx936 -std=c++17 -Wno-return-type}
     SHMEM_LINK_OPTIONS="-Wl,-rpath,${SHMEM_INSTALL_PREFIX}/lib/ -l:libnvshmem_device.a -lnvshmem_host"
 fi
 # -------------------------- duSHMEM END -------------------------- #
