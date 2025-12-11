@@ -139,6 +139,11 @@ hipcc -Wno-unused-result -Wsign-compare -DNDEBUG -g -fwrapv -O2 -Wall -g -fstack
 # build whl
 echo "Using Python: $(which python3)"
 python3 --version
-python setup.py bdist_wheel
+if [ "$USE_NVSHMEM" == "ON" ]; then
+    python setup.py bdist_wheel --shmem=nv
+fi
+if [ "$USE_ROCSHMEM" == "ON" ]; then
+    python setup.py bdist_wheel --shmem=rocm
+fi
 echo "✅ Build complete:"
 ls -lh dist/
