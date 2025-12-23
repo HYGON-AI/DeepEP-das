@@ -140,7 +140,7 @@ def test_main(num_tokens: int,
                                                                                  topk_weights,
                                                                                  handle,
                                                                                  async_finish=not return_recv_hook,
-                                                                                 #  zero_copy=zero_copy,
+                                                                                 zero_copy=zero_copy,
                                                                                  return_recv_hook=return_recv_hook,
                                                                                  out=out)
                             hook() if return_recv_hook else event.current_stream_wait()
