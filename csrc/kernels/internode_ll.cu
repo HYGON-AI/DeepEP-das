@@ -549,6 +549,7 @@ combine(void* combined_x,
         const void* x, const int64_t* topk_idx, const float* topk_weights,
         const int* src_info, const int64_t* layout_range,
         int* global_atomic_counter,
+        int64_t* combine_wait_recv_cost_stats,
         int64_t* next_clean, int num_next_clean_int,
         int* atomic_clean_flag,
         int num_combined_tokens, int hidden, int num_topk,
@@ -724,8 +725,23 @@ LOW_LATENCY_COMBINE_RECV:
     // Wait all ranks to arrive and notify PCIe usage
     if (responsible_expert_idx < num_experts) {
         EP_DEVICE_ASSERT(num_warps_per_group > 1);
-        if (sub_warp_id == 0 and lane_id == 0){
-            while (ld_acquire_global(reinterpret_cast<int*>(rdma_recv_flag + responsible_expert_idx)) == 0);
+        if (sub_warp_id == 0 and lane_id == 0) {
+            const auto src_rank = responsible_expert_idx / num_local_experts;
+            auto start_time = wall_clock64();
+            uint64_t wait_recv_cost = 0;
+            while (ld_acquire_global(reinterpret_cast<int*>(rdma_recv_flag + responsible_expert_idx)) == 0  // recv not ready
+                   && (wait_recv_cost = wall_clock64() - start_time) <= NUM_TIMEOUT_CYCLES   // not timeout
+            );
+
+            // Mask rank if timeout
+            if (wait_recv_cost > NUM_TIMEOUT_CYCLES) {
+                printf("Warning: DeepEP timeout for combine receive, rank %d, local_expert_idx %d, src_rank %d\n",
+                       rank, responsible_expert_idx % num_local_experts, src_rank);
+            }
+
+            if (combine_wait_recv_cost_stats != nullptr) {
+                atomicAdd(reinterpret_cast<unsigned long long*>(combine_wait_recv_cost_stats + src_rank), wait_recv_cost);
+            }
         }
     }
     grid_barrier(global_atomic_counter, num_sms);
@@ -776,6 +792,7 @@ void combine(void* combined_x,
              const void* x, const int64_t* topk_idx, const float* topk_weights,
              const int* src_info, const int64_t* layout_range,
              int* global_atomic_counter,
+             int64_t* combine_wait_recv_cost_stats,
              int64_t* next_clean, int num_next_clean_int,
              int num_combined_tokens, int hidden, int num_max_dispatch_tokens_per_rank,
              int num_topk, int num_experts, int rank, int num_ranks,
@@ -803,6 +820,7 @@ LAUNCH_KERNEL_NON_COOPERATIVE(&cfg, combine_func, \
               rdma_recv_x, rdma_recv_flag, rdma_send_x, \
               x, topk_idx, topk_weights, src_info, layout_range, \
               global_atomic_counter, \
+              combine_wait_recv_cost_stats, \
               next_clean, num_next_clean_int, \
               atomic_clean_flag, \
               num_combined_tokens, hidden, num_topk, \
