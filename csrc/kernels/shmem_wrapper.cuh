@@ -116,6 +116,18 @@ __device__ inline void shmem_long_atomic_add(
     rocshmem::rocshmem_long_atomic_add(dest, value, pe);
 }
 
+#if defined(ROCM_USE_MULTIQP)
+__device__ inline void shmemx_int8_put_nbi_warp_dp(
+    signed char *dest, const signed char *source, size_t nelems, int qp_idx, int pe) {
+    rocshmem::rocshmem_schar_put_nbi_wave_dp(dest, source, nelems, qp_idx, pe);
+}
+
+__device__ inline void shmem_long_atomic_add_dp(
+    long *dest, long value, int qp_idx, int pe) {
+    rocshmem::rocshmem_long_atomic_add_dp(dest, value, qp_idx, pe);
+}
+#endif
+
 #if !defined(ROCM_DISABLE_CTX)
 using shmem_ctx_t = rocshmem::rocshmem_ctx_t;
 
