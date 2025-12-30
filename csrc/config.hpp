@@ -44,10 +44,10 @@ struct Config {
         constexpr int kNumMaxTopK   = 128;
         constexpr int kNumMaxScales = 128;
         EP_HOST_ASSERT(num_ranks < NUM_MAX_NVL_PEERS or num_ranks % NUM_MAX_NVL_PEERS == 0);
-        EP_HOST_ASSERT(num_ranks <= NUM_MAX_NVL_PEERS or num_sms % 2 == 0);
+        EP_HOST_ASSERT(num_ranks <= NUM_MAX_NVL_PEERS or num_sms % (2 * NUM_INTERNODE_DISPATCH_BLOCKS_PER_CHANNEL) == 0);
         const auto num_rdma_ranks = std::max(num_ranks / NUM_MAX_NVL_PEERS, 1);
         const auto num_nvl_ranks  = std::min(num_ranks, NUM_MAX_NVL_PEERS);
-        const int  num_channels   = num_sms / 2;
+        const int  num_channels   = num_sms;
 
         size_t num_bytes = 0;
         num_bytes += num_channels * num_nvl_ranks * (2 * num_rdma_ranks + 3) * sizeof(int);
@@ -77,9 +77,9 @@ struct Config {
         constexpr int kNumMaxTopK   = 128;
         constexpr int kNumMaxScales = 128;
         EP_HOST_ASSERT(num_ranks % NUM_MAX_NVL_PEERS == 0);
-        EP_HOST_ASSERT(num_sms % 2 == 0);
+        EP_HOST_ASSERT(num_sms % NUM_INTERNODE_DISPATCH_BLOCKS_PER_CHANNEL == 0);
         const int num_rdma_ranks = num_ranks / NUM_MAX_NVL_PEERS;
-        const int num_channels   = num_sms / 2;
+        const int num_channels   = num_sms;
 
         size_t num_bytes = 0;
         num_bytes += num_channels * num_rdma_ranks * (NUM_MAX_NVL_PEERS * 2 + 2) * 2 * sizeof(int);
