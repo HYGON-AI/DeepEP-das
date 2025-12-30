@@ -430,6 +430,12 @@ LOW_LATENCY_DISPATCH_RECV:
             recv_range[src_rank] = pack2<int, int64_t>(num_recv_tokens, recv_token_begin_idx);
         }
 
+#if defined(ROCM_USE_MULTIQP)
+        if (sub_warp_id == 2 and lane_id == 0) {
+            internode::shmem_qp_quiet(num_ranks + responsible_expert_idx);
+        }
+#endif
+
         // no needs to reset because there is no iteration
         if (lane_id == 0){
             volatile int ret = __hip_atomic_fetch_add(&sync_large_warp_counters[warp_group_id], 1, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_WORKGROUP);
@@ -696,10 +702,6 @@ combine(void* combined_x,
             atomic_add_release_global(atomic_clean_flag, -1);
         }
         syncwarp();
-
-        // if (num_ranks > 8){
-        //    internode::shmem_fence();
-        // }
     }
 
     // Receiving phase
@@ -728,6 +730,11 @@ LOW_LATENCY_COMBINE_RECV:
                 atomicAdd(reinterpret_cast<unsigned long long*>(combine_wait_recv_cost_stats + src_rank), wait_recv_cost);
             }
         }
+#if defined(ROCM_USE_MULTIQP)
+        if (sub_warp_id == 2 and lane_id == 0) {
+            internode::shmem_qp_quiet(num_ranks + responsible_expert_idx);
+        }
+#endif
     }
     grid_barrier(global_atomic_counter, num_sms);
 
