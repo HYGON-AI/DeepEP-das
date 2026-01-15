@@ -96,46 +96,46 @@ class Buffer:
         local_ipc_handle = self.runtime.get_local_ipc_handle()
         dist.all_gather_object(ipc_handles, local_ipc_handle, group)
 
-        # Synchronize NVSHMEM unique IDs
+        # Synchronize DUSHMEM unique IDs
         root_unique_id = None
         if self.runtime.get_num_rdma_ranks() > 1 or low_latency_mode:
             # Enable IBGDA
             self._setup_device_hca_mapping()
             assert num_qps_per_rank > 0
-            os.environ["NVSHMEM_DISABLE_P2P"] = "0" if allow_nvlink_for_low_latency_mode else "1"
-            # os.environ["NVSHMEM_IB_ENABLE_IBGDA"] = "1"
-            os.environ["NVSHMEM_IB_ENABLE_IBGDA"] = "0"  # force_use_ibrc
+            os.environ["DUSHMEM_DISABLE_P2P"] = "0" if allow_nvlink_for_low_latency_mode else "1"
+            # os.environ["DUSHMEM_IB_ENABLE_IBGDA"] = "1"
+            os.environ["DUSHMEM_IB_ENABLE_IBGDA"] = "0"  # force_use_ibrc
 
-            os.environ["NVSHMEM_IBGDA_NIC_HANDLER"] = "gpu"
-            os.environ["NVSHMEM_IB_DISABLE_DMABUF"] = "1"
-            os.environ["NVSHMEM_ENABLE_NIC_PE_MAPPING"] = "1"
+            os.environ["DUSHMEM_IBGDA_NIC_HANDLER"] = "gpu"
+            os.environ["DUSHMEM_IB_DISABLE_DMABUF"] = "1"
+            os.environ["DUSHMEM_ENABLE_NIC_PE_MAPPING"] = "1"
 
-            os.environ["NVSHMEM_IBGDA_NUM_RC_PER_PE"] = f"{num_qps_per_rank}"
+            os.environ["DUSHMEM_IBGDA_NUM_RC_PER_PE"] = f"{num_qps_per_rank}"
             # Make sure QP depth is always larger than the number of on-flight WRs, so that we can skip WQ slot check
-            os.environ["NVSHMEM_QP_DEPTH"] = os.environ.get("NVSHMEM_QP_DEPTH", "1024")
+            os.environ["DUSHMEM_QP_DEPTH"] = os.environ.get("DUSHMEM_QP_DEPTH", "1024")
 
             # Reduce gpu memory usage
             # 6 default teams + 1 extra team
-            os.environ["NVSHMEM_MAX_TEAMS"] = "7"
+            os.environ["DUSHMEM_MAX_TEAMS"] = "7"
             # Disable NVLink SHArP
-            os.environ["NVSHMEM_DISABLE_NVLS"] = "1"
-            # NOTES: NVSHMEM initialization requires at least 256 MiB
-            os.environ["NVSHMEM_CUMEM_GRANULARITY"] = f"{2 ** 29}"
+            os.environ["DUSHMEM_DISABLE_NVLS"] = "1"
+            # NOTES: DUSHMEM initialization requires at least 256 MiB
+            os.environ["DUSHMEM_CUMEM_GRANULARITY"] = f"{2 ** 29}"
 
             if not allow_mnnvl:
                 # Disable multi-node NVLink detection
-                os.environ["NVSHMEM_DISABLE_MNNVL"] = "1"
+                os.environ["DUSHMEM_DISABLE_MNNVL"] = "1"
 
             # Synchronize using the root ID
-            nvshmem_unique_ids = [
+            dushmem_unique_ids = [
                 None,
             ] * self.group_size
             if (low_latency_mode and self.rank == 0) or (
                 not low_latency_mode and self.runtime.get_rdma_rank() == 0
             ):
-                root_unique_id = self.runtime.get_local_nvshmem_unique_id()
-            dist.all_gather_object(nvshmem_unique_ids, root_unique_id, group)
-            root_unique_id = nvshmem_unique_ids[
+                root_unique_id = self.runtime.get_local_dushmem_unique_id()
+            dist.all_gather_object(dushmem_unique_ids, root_unique_id, group)
+            root_unique_id = dushmem_unique_ids[
                 0 if low_latency_mode else self.runtime.get_root_rdma_rank(True)
             ]
 
@@ -169,9 +169,9 @@ class Buffer:
             #     assert visible_devices[current_device].isdigit(), f"DEEP_EP_DEVICE_TO_HCA_MAPPING requires CUDA_VISIBLE_DEVICES to contain integer indices"
             #     current_device = int(visible_devices[current_device])
 
-            assert current_device in device_mapping, f"Current CUDA device {current_device} not found in DEEP_EP_DEVICE_TO_HCA_MAPPING"
-            os.environ['NVSHMEM_ENABLE_PE_MAPPING'] = '1'
-            os.environ['NVSHMEM_HCA_LIST'] = device_mapping[current_device]
+            assert current_device in device_mapping, f"Current HIP device {current_device} not found in DEEP_EP_DEVICE_TO_HCA_MAPPING"
+            os.environ['DUSHMEM_ENABLE_PE_MAPPING'] = '1'
+            os.environ['DUSHMEM_HCA_LIST'] = device_mapping[current_device]
 
     def destroy(self):
         """

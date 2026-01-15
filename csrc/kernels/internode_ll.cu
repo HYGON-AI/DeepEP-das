@@ -257,10 +257,10 @@ dispatch(void* packed_recv_x, void* packed_recv_x_scales,
                                      rank * num_max_dispatch_tokens_per_rank * num_bytes_per_msg +
                                      slot_idx * num_bytes_per_msg;
                 if (dst_rank != rank) {
-#if defined(FORCE_NVSHMEM_API)
-                    void *peer_base_addr = (void *)__ldg((const long long unsigned *)nvshmemi_device_state_d.peer_heap_base_p2p + dst_rank);
+#if defined(FORCE_DUSHMEM_API)
+                    void *peer_base_addr = (void *)__ldg((const long long unsigned *)dushmemi_device_state_d.peer_heap_base_p2p + dst_rank);
                     if (peer_base_addr) {
-                        char *req_rptr_actual = (char *)(peer_base_addr) + ((char *)dst_ptr - (char *)(nvshmemi_device_state_d.heap_base));
+                        char *req_rptr_actual = (char *)(peer_base_addr) + ((char *)dst_ptr - (char *)(dushmemi_device_state_d.heap_base));
                         const auto* src_int4_ptr = reinterpret_cast<const int4*>(src_ptr);
                         const auto* dst_int4_ptr = reinterpret_cast<int4*>(req_rptr_actual);
                         UNROLLED_WARP_COPY(8, lane_id, num_int4_per_msg, dst_int4_ptr, src_int4_ptr, ld_nc_global, st_na_global);
@@ -279,7 +279,7 @@ dispatch(void* packed_recv_x, void* packed_recv_x_scales,
                         reinterpret_cast<signed char*>(dst_ptr), reinterpret_cast<signed char*>(src_ptr),
                         num_bytes_per_msg, (dst_expert_local_idx + 1) * num_ranks + dst_rank, dst_rank);
                     #endif
-#endif // defined(FORCE_NVSHMEM_API)
+#endif // defined(FORCE_DUSHMEM_API)
                 } else {
                     // NOTES: only 2 load iterations for 7K hidden with 8 unrolls
                     const auto* src_int4_ptr = reinterpret_cast<const int4*>(src_ptr);
@@ -342,11 +342,11 @@ dispatch(void* packed_recv_x, void* packed_recv_x_scales,
         // Wait local sends issued and send expert counts
         while (ld_acquire_global(atomic_finish_counter_per_expert + responsible_expert_idx) != FINISHED_SUM_TAG * 2);
         if (dst_rank != rank) {
-#if defined(FORCE_NVSHMEM_API)
-            void *peer_base_addr = (void *)__ldg((const long long unsigned *)nvshmemi_device_state_d.peer_heap_base_p2p + dst_rank);
+#if defined(FORCE_DUSHMEM_API)
+            void *peer_base_addr = (void *)__ldg((const long long unsigned *)dushmemi_device_state_d.peer_heap_base_p2p + dst_rank);
             if (peer_base_addr) {   // P2P enabled
                 int *rptr_actual = (int *)((char *)(peer_base_addr) +
-                    ((char *)(rdma_recv_count + dst_expert_local_idx * num_ranks + rank) - (char *)(nvshmemi_device_state_d.heap_base)));
+                    ((char *)(rdma_recv_count + dst_expert_local_idx * num_ranks + rank) - (char *)(dushmemi_device_state_d.heap_base)));
                 st_na_release(rptr_actual, -num_tokens_sent - 1);
             } else {
                 internode::shmem_long_atomic_add(
@@ -361,7 +361,7 @@ dispatch(void* packed_recv_x, void* packed_recv_x_scales,
                 rdma_recv_count + dst_expert_local_idx * num_ranks + rank, -num_tokens_sent - 1,
                 (dst_expert_local_idx + 1) * num_ranks + dst_rank, dst_rank);
             #endif
-#endif // defined(FORCE_NVSHMEM_API)
+#endif // defined(FORCE_DUSHMEM_API)
         } else {
             st_na_release(reinterpret_cast<int *>(rdma_recv_count + dst_expert_local_idx * num_ranks + rank), -num_tokens_sent - 1);
         }
@@ -640,10 +640,10 @@ combine(void* combined_x,
                 if (not zero_copy)
                     UNROLLED_WARP_COPY_LL(7, lane_id, hidden_bf16_int4, buf_int4_ptr, x_int4, ld_nc_global, st_na_global);
 
-#if defined(FORCE_NVSHMEM_API)
-                void *peer_base_addr = (void *)__ldg((const long long unsigned *)nvshmemi_device_state_d.peer_heap_base_p2p + dst_rank);
+#if defined(FORCE_DUSHMEM_API)
+                void *peer_base_addr = (void *)__ldg((const long long unsigned *)dushmemi_device_state_d.peer_heap_base_p2p + dst_rank);
                 if (peer_base_addr) {
-                    char *req_rptr_actual = (char *)(peer_base_addr) + ((char *)dst_ptr - (char *)(nvshmemi_device_state_d.heap_base));
+                    char *req_rptr_actual = (char *)(peer_base_addr) + ((char *)dst_ptr - (char *)(dushmemi_device_state_d.heap_base));
                     const auto dst_int4_ptr = reinterpret_cast<int4*>(req_rptr_actual);
                     UNROLLED_WARP_COPY(7, lane_id, hidden_bf16_int4, dst_int4_ptr, x_int4, ld_nc_global, st_na_global);
                 } else {
@@ -661,7 +661,7 @@ combine(void* combined_x,
                     reinterpret_cast<signed char*>(dst_ptr), reinterpret_cast<signed char*>(buf_ptr),
                     hidden * sizeof(hip_bfloat16), (local_expert_idx + 1) * num_ranks + dst_rank, dst_rank);
                 #endif
-#endif // defined(FORCE_NVSHMEM_API)
+#endif // defined(FORCE_DUSHMEM_API)
             }
         }
 
@@ -676,11 +676,11 @@ combine(void* combined_x,
         if (sub_warp_id == 1 and lane_id == 0) {
             while (ld_acquire_global(atomic_clean_flag) == 0);
             if (dst_rank != rank) {
-#if defined(FORCE_NVSHMEM_API)
-                void *peer_base_addr = (void *)__ldg((const long long unsigned *)nvshmemi_device_state_d.peer_heap_base_p2p + dst_rank);
+#if defined(FORCE_DUSHMEM_API)
+                void *peer_base_addr = (void *)__ldg((const long long unsigned *)dushmemi_device_state_d.peer_heap_base_p2p + dst_rank);
                 if (peer_base_addr) {
                     int *req_rptr_actual = (int *)((char *)(peer_base_addr) +
-                        ((char *)(rdma_recv_flag + global_expert_idx) - (char *)(nvshmemi_device_state_d.heap_base)));
+                        ((char *)(rdma_recv_flag + global_expert_idx) - (char *)(dushmemi_device_state_d.heap_base)));
                     st_na_release(req_rptr_actual, 1);
                 } else {
                     internode::shmem_long_atomic_add(
@@ -695,7 +695,7 @@ combine(void* combined_x,
                     rdma_recv_flag + global_expert_idx, 1,
                     (local_expert_idx + 1) * num_ranks + dst_rank, dst_rank);
                 #endif
-#endif // defined(FORCE_NVSHMEM_API)
+#endif // defined(FORCE_DUSHMEM_API)
             } else {
                 st_na_release(reinterpret_cast<int*>(rdma_recv_flag + global_expert_idx), 1);
             }

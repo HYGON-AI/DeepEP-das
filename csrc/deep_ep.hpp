@@ -29,7 +29,7 @@ private:
     void* nvl_buffer_ptrs[NUM_MAX_NVL_PEERS] = {nullptr};
     void** nvl_buffer_ptrs_gpu = nullptr;
 
-    // NVSHMEM Buffer
+    // DUSHMEM Buffer
     int64_t num_rdma_bytes;
     void   *rdma_buffer_ptr = nullptr;
 
@@ -48,7 +48,7 @@ private:
     // Stream for communication
     at::hip::HIPStreamMasqueradingAsCUDA comm_stream;
 
-    // After IPC/NVSHMEM synchronization, this flag will be true
+    // After IPC/DUSHMEM synchronization, this flag will be true
     bool available = false;
 
     // Whether explicit `destroy()` is required.
@@ -95,7 +95,7 @@ public:
 
     pybind11::bytearray get_local_ipc_handle() const;
 
-    pybind11::bytearray get_local_nvshmem_unique_id() const;
+    pybind11::bytearray get_local_dushmem_unique_id() const;
 
     torch::Tensor get_local_buffer_tensor(const pybind11::object &dtype, int64_t offset,
                                           bool use_rdma_buffer) const;

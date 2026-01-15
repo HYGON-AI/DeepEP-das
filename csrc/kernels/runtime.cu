@@ -61,9 +61,9 @@ int init(const std::vector<uint8_t> &root_unique_id_val, int rank, int num_ranks
                                &cpu_rdma_team_config, 0, &cpu_rdma_team) == 0);
         EP_HOST_ASSERT(cpu_rdma_team != EP_SHMEM_TEAM_INVALID);
 
-#ifdef FORCE_NVSHMEM_API
-        nvshmemi_device_host_state_t* dev_state_ptr = nullptr;
-        CUDA_CHECK(hipGetSymbolAddress(reinterpret_cast<void**>(&dev_state_ptr), nvshmemi_device_state_d));
+#ifdef FORCE_DUSHMEM_API
+        dushmemi_device_host_state_t* dev_state_ptr = nullptr;
+        CUDA_CHECK(hipGetSymbolAddress(reinterpret_cast<void**>(&dev_state_ptr), dushmemi_device_state_d));
         bool ibgda_is_initialized = false;
         CUDA_CHECK(hipMemcpy(&dev_state_ptr->ibgda_is_initialized, &ibgda_is_initialized, sizeof(bool), hipMemcpyHostToDevice));
 #endif

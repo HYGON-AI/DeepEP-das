@@ -86,7 +86,7 @@ __forceinline__ __device__ int translate_dst_rdma_rank(const int dst_rdma_rank,
 
 template <bool kLowLatencyMode>
 __forceinline__ __device__ void
-nvshmem_barrier_with_same_gpu_idx(const shmem_team_t &rdma_team) {
+dushmem_barrier_with_same_gpu_idx(const shmem_team_t &rdma_team) {
     // NOTE: shmem_device_barrier_all() might be an issue as
     // it doesn't follow OpenSHMEM specification on ROCm
     kLowLatencyMode ? shmem_barrier(rdma_team) : shmem_device_barrier_all();
@@ -119,7 +119,7 @@ notify_dispatch(const int *num_tokens_per_rank, int *moe_recv_counter_mapped, in
         EP_DEVICE_ASSERT(num_warps > 1);
         EP_DEVICE_ASSERT(kNumRDMARanks <= num_threads);
         if (thread_id == kWarpSize)
-            nvshmem_barrier_with_same_gpu_idx<kLowLatencyMode>(rdma_team);
+            dushmem_barrier_with_same_gpu_idx<kLowLatencyMode>(rdma_team);
 
         barrier_block<NUM_MAX_NVL_PEERS>(barrier_signal_ptrs, nvl_rank);
         __syncthreads();
@@ -161,7 +161,7 @@ notify_dispatch(const int *num_tokens_per_rank, int *moe_recv_counter_mapped, in
         }
         __syncthreads();
         if (thread_id == 0)
-            nvshmem_barrier_with_same_gpu_idx<kLowLatencyMode>(rdma_team);
+            dushmem_barrier_with_same_gpu_idx<kLowLatencyMode>(rdma_team);
 
         __syncthreads();
 
@@ -189,7 +189,7 @@ notify_dispatch(const int *num_tokens_per_rank, int *moe_recv_counter_mapped, in
             nvl_buffer_ptr_int[nvl_clean_offset + i] = 0;
 
         // Reduce number of tokens per expert into the NVL send buffer
-        // TODO: may use NVSHMEM reduction
+        // TODO: may use DUSHMEM reduction
         EP_DEVICE_ASSERT(num_rdma_experts <= num_threads);
         if (thread_id < num_rdma_experts) {
             int sum = 0;
@@ -257,7 +257,7 @@ notify_dispatch(const int *num_tokens_per_rank, int *moe_recv_counter_mapped, in
         // Finally barrier
         __syncthreads();
         if (thread_id == kWarpSize)
-            nvshmem_barrier_with_same_gpu_idx<kLowLatencyMode>(rdma_team);
+            dushmem_barrier_with_same_gpu_idx<kLowLatencyMode>(rdma_team);
 
         barrier_block<NUM_MAX_NVL_PEERS>(barrier_signal_ptrs, nvl_rank);
     } else {
@@ -399,7 +399,7 @@ dispatch(int4 *recv_x, float *recv_x_scales, int64_t *recv_topk_idx, float *recv
         kForwarderCoordinator,  // 向远端RDMA确认接收
         kNVLReceivers           // 从nvl缓存写入到recv_x
     };
-#if !defined(FORCE_NVSHMEM_API) && !defined(ROCM_DISABLE_CTX)
+#if !defined(FORCE_DUSHMEM_API) && !defined(ROCM_DISABLE_CTX)
     __shared__ shmem_ctx_t ctx;
     shmem_wg_ctx_create(&ctx);
 #endif
@@ -516,7 +516,7 @@ dispatch(int4 *recv_x, float *recv_x_scales, int64_t *recv_topk_idx, float *recv
 
             syncwarp();
             if (dst_rdma_rank != rdma_rank) {
-#if !defined(FORCE_NVSHMEM_API) && !defined(ROCM_DISABLE_CTX)
+#if !defined(FORCE_DUSHMEM_API) && !defined(ROCM_DISABLE_CTX)
                 shmem_ctx_int_put_nbi_warp(ctx, 
 #else
                 shmemx_int_put_nbi_warp(
@@ -527,7 +527,7 @@ dispatch(int4 *recv_x, float *recv_x_scales, int64_t *recv_topk_idx, float *recv
             }
         }
 
-#if !defined(FORCE_NVSHMEM_API) && !defined(ROCM_DISABLE_CTX)
+#if !defined(FORCE_DUSHMEM_API) && !defined(ROCM_DISABLE_CTX)
         shmem_ctx_quiet(ctx);                
 #else
         shmem_fence();
@@ -690,7 +690,7 @@ dispatch(int4 *recv_x, float *recv_x_scales, int64_t *recv_topk_idx, float *recv
         最后，它更新相关的尾部位置，以便下次循环时可以正确地计算需要发送的令牌数。
 
         kRDMASenderCoordinator使用了同sm内存一致性（ld.acquire.cta.s32），
-        nvshmem内存一致性（nvshmem_fence）和原子操作（nvshmemx_signal_op），减少硬同步，提升整体效率。
+        dushmem内存一致性（dushmem_fence）和原子操作（dushmemx_signal_op），减少硬同步，提升整体效率。
         */
         if(warp_id > kNumDispatchRDMASenderWarps) {
             return;
@@ -741,7 +741,7 @@ dispatch(int4 *recv_x, float *recv_x_scales, int64_t *recv_topk_idx, float *recv
                 if(dst_rdma_rank != rdma_rank) {
                     auto dst_slot_idx = synced_last_issued_tail % num_max_rdma_chunked_recv_tokens;
                     EP_DEVICE_ASSERT(dst_slot_idx + num_tokens_to_issue <= num_max_rdma_chunked_recv_tokens);
-#if !defined(FORCE_NVSHMEM_API) && !defined(ROCM_DISABLE_CTX)
+#if !defined(FORCE_DUSHMEM_API) && !defined(ROCM_DISABLE_CTX)
                     shmem_ctx_schar_put_nbi_warp(ctx,
 #else
                     shmemx_int8_put_nbi_warp(
@@ -752,7 +752,7 @@ dispatch(int4 *recv_x, float *recv_x_scales, int64_t *recv_topk_idx, float *recv
                             dst_slot_idx * num_bytes_per_rdma_token,
                         num_bytes_per_rdma_token * num_tokens_to_issue,
                         translate_dst_rdma_rank<kLowLatencyMode>(dst_rdma_rank, nvl_rank));
-#if !defined(FORCE_NVSHMEM_API) && !defined(ROCM_DISABLE_CTX)
+#if !defined(FORCE_DUSHMEM_API) && !defined(ROCM_DISABLE_CTX)
                     shmem_ctx_quiet(ctx);                
 #else
                     shmem_fence();
@@ -768,7 +768,7 @@ dispatch(int4 *recv_x, float *recv_x_scales, int64_t *recv_topk_idx, float *recv
                     last_issued_tail += num_tokens_to_issue;
                     num_tokens_to_send -= num_tokens_to_issue;
                     // 更新远端rdma 己方已发送的token数，用于做发送信息同步。用于与kRDMAAndNVLForwarder互相通信
-#if !defined(FORCE_NVSHMEM_API) && !defined(ROCM_DISABLE_CTX)
+#if !defined(FORCE_DUSHMEM_API) && !defined(ROCM_DISABLE_CTX)
                     shmem_ctx_ulong_atomic_add(ctx,
 #else
                     shmem_signal_op_add(
@@ -1008,7 +1008,7 @@ dispatch(int4 *recv_x, float *recv_x_scales, int64_t *recv_topk_idx, float *recv
 
             // 更新远程头部
             if(min_head != std::numeric_limits<int>::max() && min_head >= last_head + num_max_rdma_chunked_send_tokens && lane_id < kNumRDMARanks){
-#if !defined(FORCE_NVSHMEM_API) && !defined(ROCM_DISABLE_CTX)
+#if !defined(FORCE_DUSHMEM_API) && !defined(ROCM_DISABLE_CTX)
                 shmem_ctx_ulong_atomic_add(ctx,
 #else
                 shmem_signal_op_add(
@@ -1127,7 +1127,7 @@ dispatch(int4 *recv_x, float *recv_x_scales, int64_t *recv_topk_idx, float *recv
             }
         } // while(num_tokens_to_recv > 0)
     }
-#if !defined(FORCE_NVSHMEM_API) && !defined(ROCM_DISABLE_CTX)
+#if !defined(FORCE_DUSHMEM_API) && !defined(ROCM_DISABLE_CTX)
     shmem_wg_ctx_destroy(&ctx);
 #endif
 }
@@ -1203,7 +1203,7 @@ cached_notify(const int rdma_clean_offset, const int rdma_num_int_clean, const i
     if (sm_id == 0) {
         // Barrier for RDMA
         if (thread_id == 0)
-            nvshmem_barrier_with_same_gpu_idx<kLowLatencyMode>(rdma_team);
+            dushmem_barrier_with_same_gpu_idx<kLowLatencyMode>(rdma_team);
 
         __syncthreads();
 
@@ -1216,7 +1216,7 @@ cached_notify(const int rdma_clean_offset, const int rdma_num_int_clean, const i
 
         // Barrier again
         if (thread_id == 0)
-            nvshmem_barrier_with_same_gpu_idx<kLowLatencyMode>(rdma_team);
+            dushmem_barrier_with_same_gpu_idx<kLowLatencyMode>(rdma_team);
 
     } else if (sm_id == 1) {
         // Barrier for NVL
@@ -1417,7 +1417,7 @@ combine(int4 *combined_x, float *combined_topk_weights, const bool *is_combined_
         kRDMACoordinator,
         kNVLCoordinator
     };
-#if !defined(FORCE_NVSHMEM_API) && !defined(ROCM_DISABLE_CTX)
+#if !defined(FORCE_DUSHMEM_API) && !defined(ROCM_DISABLE_CTX)
     __shared__ shmem_ctx_t ctx;
     shmem_wg_ctx_create(&ctx);
 #endif
@@ -1744,7 +1744,7 @@ combine(int4 *combined_x, float *combined_topk_weights, const bool *is_combined_
                 if(sub_warp_id == kNumWarpsPerForwarder - 1) {
                     if(dst_rdma_rank != rdma_rank) {
                         auto rdma_slot_idx = token_start_idx % num_max_rdma_chunked_recv_tokens;
-#if !defined(FORCE_NVSHMEM_API) && !defined(ROCM_DISABLE_CTX)
+#if !defined(FORCE_DUSHMEM_API) && !defined(ROCM_DISABLE_CTX)
                         shmem_ctx_schar_put_nbi_warp(ctx,
 #else
                         shmemx_int8_put_nbi_warp(
@@ -1755,7 +1755,7 @@ combine(int4 *combined_x, float *combined_topk_weights, const bool *is_combined_
                                 rdma_slot_idx * num_bytes_per_rdma_token,
                             num_chunked_tokens * num_bytes_per_rdma_token,
                             translate_dst_rdma_rank<kLowLatencyMode>(dst_rdma_rank, nvl_rank));
-#if !defined(FORCE_NVSHMEM_API) && !defined(ROCM_DISABLE_CTX)
+#if !defined(FORCE_DUSHMEM_API) && !defined(ROCM_DISABLE_CTX)
                         shmem_ctx_quiet(ctx);                
 #else
                         shmem_fence();
@@ -1767,7 +1767,7 @@ combine(int4 *combined_x, float *combined_topk_weights, const bool *is_combined_
                     // Write new RDMA tail
                     syncwarp();
                     if(lane_id == 0) {
-#if !defined(FORCE_NVSHMEM_API) && !defined(ROCM_DISABLE_CTX)
+#if !defined(FORCE_DUSHMEM_API) && !defined(ROCM_DISABLE_CTX)
                         shmem_ctx_ulong_atomic_add(ctx,
 #else
                         shmem_signal_op_add(
@@ -1900,7 +1900,7 @@ combine(int4 *combined_x, float *combined_topk_weights, const bool *is_combined_
                             min_head = min(min_head, rdma_receiver_rdma_head[i][dst_rdma_rank]);
 
                     if (min_head != std::numeric_limits<int>::max() and min_head >= last_rdma_head + num_max_rdma_chunked_send_tokens and lane_id < kNumRDMARanks) {
-#if !defined(FORCE_NVSHMEM_API) && !defined(ROCM_DISABLE_CTX)
+#if !defined(FORCE_DUSHMEM_API) && !defined(ROCM_DISABLE_CTX)
                         shmem_ctx_ulong_atomic_add(ctx,
 #else
                         shmem_signal_op_add(
@@ -1917,7 +1917,7 @@ combine(int4 *combined_x, float *combined_topk_weights, const bool *is_combined_
             }
         }
     }
-#if !defined(FORCE_NVSHMEM_API) && !defined(ROCM_DISABLE_CTX)
+#if !defined(FORCE_DUSHMEM_API) && !defined(ROCM_DISABLE_CTX)
     shmem_wg_ctx_destroy(&ctx);
 #endif
 }

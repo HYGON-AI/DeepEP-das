@@ -143,7 +143,7 @@ pybind11::bytearray Buffer::get_local_ipc_handle() const {
     return {ipc_handles[nvl_rank].reserved, HIP_IPC_HANDLE_SIZE};
 }
 
-pybind11::bytearray Buffer::get_local_nvshmem_unique_id() const {
+pybind11::bytearray Buffer::get_local_dushmem_unique_id() const {
 #ifndef DISABLE_ROCSHMEM
     EP_HOST_ASSERT(rdma_rank == 0 and "Only RDMA rank 0 can get ROCSHMEM unique ID");
     auto unique_id = internode::get_unique_id();
@@ -260,9 +260,9 @@ void Buffer::sync(const std::vector<int>                                &device_
         std::vector<uint8_t> root_unique_id(root_unique_id_opt->size());
         auto root_unique_id_str = root_unique_id_opt->cast<std::string>();
         std::memcpy(root_unique_id.data(), root_unique_id_str.c_str(), root_unique_id_opt->size());
-        auto nvshmem_rank      = low_latency_mode ? rank : rdma_rank;
-        auto num_nvshmem_ranks = low_latency_mode ? num_ranks : num_rdma_ranks;
-        EP_HOST_ASSERT(nvshmem_rank == internode::init(root_unique_id, nvshmem_rank, num_nvshmem_ranks, low_latency_mode));
+        auto dushmem_rank      = low_latency_mode ? rank : rdma_rank;
+        auto num_dushmem_ranks = low_latency_mode ? num_ranks : num_rdma_ranks;
+        EP_HOST_ASSERT(dushmem_rank == internode::init(root_unique_id, dushmem_rank, num_dushmem_ranks, low_latency_mode));
         internode::barrier();
 
         // Allocate
@@ -1531,7 +1531,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         .def("get_root_rdma_rank", &deep_ep::Buffer::get_root_rdma_rank)
         .def("get_local_device_id", &deep_ep::Buffer::get_local_device_id)
         .def("get_local_ipc_handle", &deep_ep::Buffer::get_local_ipc_handle)
-        .def("get_local_nvshmem_unique_id", &deep_ep::Buffer::get_local_nvshmem_unique_id)
+        .def("get_local_dushmem_unique_id", &deep_ep::Buffer::get_local_dushmem_unique_id)
         .def("get_local_buffer_tensor", &deep_ep::Buffer::get_local_buffer_tensor)
         .def("get_comm_stream", &deep_ep::Buffer::get_comm_stream)
         .def("sync", &deep_ep::Buffer::sync)
