@@ -122,16 +122,17 @@ build_dushmem()
     cd "$src_path"
 }
 if [ "$USE_NVSHMEM" == "ON" ]; then
-    if [ ! -d "third-party/dushmem-hip/src/" ]; then
-        echo "download submodule..."
-        git submodule update --init third-party/dushmem-hip
-    fi
+    # if [ ! -d "third-party/dushmem-hip/src/" ]; then
+    #     echo "download submodule..."
+    #     git submodule update --init third-party/dushmem-hip
+    # fi
 
-    if [ ! -d "third-party/dushmem_install" ]; then
-        mkdir -p third-party/dushmem_install
-    fi
-    build_dushmem
-    SHMEM_INSTALL_PREFIX=$(pwd)/third-party/dushmem_install
+    # if [ ! -d "third-party/dushmem_install" ]; then
+    #     mkdir -p third-party/dushmem_install
+    # fi
+    # build_dushmem
+    # SHMEM_INSTALL_PREFIX=$(pwd)/third-party/dushmem_install
+    SHMEM_INSTALL_PREFIX=${ROCM_PATH}/dushmem
     COMPILE_OPTIONS=${COMPILE_OPTIONS:= -fPIC -DFORCE_NVSHMEM_API -DHIP_ENABLE_WARP_SYNC_BUILTINS -D__HIP_PLATFORM_AMD__=1 -DUSE_ROCM=1 -DHIPBLAS_V2 -DCUDA_HAS_FP16=1 -O3 -fgpu-rdc -DTORCH_API_INCLUDE_EXTENSION_H '-DPYBIND11_COMPILER_TYPE="_gcc"' '-DPYBIND11_STDLIB="_libstdcpp"' '-DPYBIND11_BUILD_ABI="_cxxabi1014"' -DTORCH_EXTENSION_NAME=deep_ep_cpp -D_GLIBCXX_USE_CXX11_ABI=1 --offload-arch=gfx936 -std=c++17 -Wno-return-type}
     SHMEM_LINK_OPTIONS="-Wl,-rpath,${SHMEM_INSTALL_PREFIX}/lib/ -l:libnvshmem_device.a -lnvshmem_host"
 fi
