@@ -31,7 +31,7 @@ PYTHON_PLATLIB=$(python3 -c "from sysconfig import get_paths; print(get_paths()[
 USE_NVSHMEM=OFF
 USE_ROCSHMEM=OFF
 ROCM_DISABLE_CTX=OFF
-ROCM_USE_MULTIQP=OFF
+ROCM_DISABLE_MULTIQP=OFF
 # 解析命令行参数
 for arg in "$@"; do
     case $arg in
@@ -44,20 +44,33 @@ for arg in "$@"; do
         ROCM_DISABLE_CTX=ON)
             ROCM_DISABLE_CTX=ON
             ;;
-        ROCM_USE_MULTIQP=ON)
-            ROCM_USE_MULTIQP=ON
+        ROCM_DISABLE_MULTIQP=ON)
+            ROCM_DISABLE_MULTIQP=ON
             ;;
         *)
-            echo "Usage: ./build.sh rocshmem [ROCM_DISABLE_CTX=ON] [ROCM_USE_MULTIQP=ON] / ./build.sh dushmem"
+            echo "Usage: ./build.sh rocshmem [ROCM_DISABLE_CTX=ON] [ROCM_DISABLE_MULTIQP=ON] / ./build.sh dushmem"
             exit 1
             ;;
     esac
 done
 
+detect_offload_arch() {
+    # 尝试使用 rocm_agent_enumerator 获取所有 gfx 架构，并按字典序降序取第一个（即“最新”）
+    if command -v rocm_agent_enumerator >/dev/null 2>&1; then
+        arch=$(rocm_agent_enumerator 2>/dev/null | grep -E '^gfx[0-9]+' | sort -r | head -n1)
+        if [ -n "$arch" ]; then
+            echo "$arch"
+            return 0
+        fi
+    fi
+}
+DETECTED_ARCH=$(detect_offload_arch)
+echo "Using --offload-arch=$DETECTED_ARCH"
+
 echo "USE_NVSHMEM=$USE_NVSHMEM"
 echo "USE_ROCSHMEM=$USE_ROCSHMEM"
 echo "ROCM_DISABLE_CTX=$ROCM_DISABLE_CTX"
-echo "ROCM_USE_MULTIQP=$ROCM_USE_MULTIQP"
+echo "ROCM_DISABLE_MULTIQP=$ROCM_DISABLE_MULTIQP"
 
 # -------------------------- With rocSHMEM -------------------------- #
 build_rocshmem()
@@ -72,7 +85,7 @@ build_rocshmem()
         return 1
     }
     echo "cd third-party/rocshmem/build"
-    ../scripts/build_configs/gda_mlx5
+    bash ../scripts/build_configs/gda_mlx5
     echo "编译rocshmem成功"
     cd "$src_path"
 }
@@ -89,12 +102,12 @@ if [ "$USE_ROCSHMEM" == "ON" ]; then
 
     build_rocshmem
     SHMEM_INSTALL_PREFIX=$(pwd)/third-party/rocshmem_install
-    COMPILE_OPTIONS=${COMPILE_OPTIONS:= -fPIC -D__HIP_PLATFORM_AMD__=1 -DUSE_ROCM=1 -DHIPBLAS_V2 -DCUDA_HAS_FP16=1 -O3 -fgpu-rdc -DTORCH_API_INCLUDE_EXTENSION_H '-DPYBIND11_COMPILER_TYPE="_gcc"' '-DPYBIND11_STDLIB="_libstdcpp"' '-DPYBIND11_BUILD_ABI="_cxxabi1014"' -DTORCH_EXTENSION_NAME=deep_ep_cpp -D_GLIBCXX_USE_CXX11_ABI=1 --offload-arch=gfx936 --offload-arch=gfx938 -std=c++17 -Wno-return-type}
+    COMPILE_OPTIONS=${COMPILE_OPTIONS:= -fPIC -D__HIP_PLATFORM_AMD__=1 -DUSE_ROCM=1 -DHIPBLAS_V2 -DCUDA_HAS_FP16=1 -O3 -fgpu-rdc -DTORCH_API_INCLUDE_EXTENSION_H '-DPYBIND11_COMPILER_TYPE="_gcc"' '-DPYBIND11_STDLIB="_libstdcpp"' '-DPYBIND11_BUILD_ABI="_cxxabi1014"' -DTORCH_EXTENSION_NAME=deep_ep_cpp -D_GLIBCXX_USE_CXX11_ABI=1 --offload-arch=$DETECTED_ARCH -std=c++17 -Wno-return-type}
     if [ "$ROCM_DISABLE_CTX" == "ON" ]; then
         COMPILE_OPTIONS="-DROCM_DISABLE_CTX $COMPILE_OPTIONS"
     fi
-    if [ "$ROCM_USE_MULTIQP" == "ON" ]; then
-        COMPILE_OPTIONS="-DROCM_USE_MULTIQP $COMPILE_OPTIONS"
+    if [ "$ROCM_DISABLE_MULTIQP" == "ON" ]; then
+        COMPILE_OPTIONS="-DROCM_DISABLE_MULTIQP $COMPILE_OPTIONS"
     fi
     SHMEM_LINK_OPTIONS=${SHMEM_LINK_OPTIONS:="-Wl,-rpath,${SHMEM_INSTALL_PREFIX}/lib/ -l:librocshmem.a"}
 fi
@@ -133,7 +146,7 @@ if [ "$USE_NVSHMEM" == "ON" ]; then
     # build_dushmem
     # SHMEM_INSTALL_PREFIX=$(pwd)/third-party/dushmem_install
     SHMEM_INSTALL_PREFIX=${ROCM_PATH}/dushmem
-    COMPILE_OPTIONS=${COMPILE_OPTIONS:= -fPIC -DFORCE_DUSHMEM_API -DHIP_ENABLE_WARP_SYNC_BUILTINS -D__HIP_PLATFORM_AMD__=1 -DUSE_ROCM=1 -DHIPBLAS_V2 -DCUDA_HAS_FP16=1 -O3 -fgpu-rdc -DTORCH_API_INCLUDE_EXTENSION_H '-DPYBIND11_COMPILER_TYPE="_gcc"' '-DPYBIND11_STDLIB="_libstdcpp"' '-DPYBIND11_BUILD_ABI="_cxxabi1014"' -DTORCH_EXTENSION_NAME=deep_ep_cpp -D_GLIBCXX_USE_CXX11_ABI=1 --offload-arch=gfx936 --offload-arch=gfx938 -std=c++17 -Wno-return-type}
+    COMPILE_OPTIONS=${COMPILE_OPTIONS:= -fPIC -DFORCE_DUSHMEM_API -DHIP_ENABLE_WARP_SYNC_BUILTINS -D__HIP_PLATFORM_AMD__=1 -DUSE_ROCM=1 -DHIPBLAS_V2 -DCUDA_HAS_FP16=1 -O3 -fgpu-rdc -DTORCH_API_INCLUDE_EXTENSION_H '-DPYBIND11_COMPILER_TYPE="_gcc"' '-DPYBIND11_STDLIB="_libstdcpp"' '-DPYBIND11_BUILD_ABI="_cxxabi1014"' -DTORCH_EXTENSION_NAME=deep_ep_cpp -D_GLIBCXX_USE_CXX11_ABI=1 --offload-arch=$DETECTED_ARCH -std=c++17 -Wno-return-type}
     SHMEM_LINK_OPTIONS="-Wl,-rpath,${SHMEM_INSTALL_PREFIX}/lib/ -l:libdushmem_device.a -ldushmem_host"
 fi
 # -------------------------- duSHMEM END -------------------------- #
@@ -147,7 +160,7 @@ hipcc ${INCLUDE_PATHS} -c $(pwd)/csrc/kernels/internode.cu -o build_/internode.o
 hipcc ${INCLUDE_PATHS} -c $(pwd)/csrc/kernels/internode_ll.cu -o build_/internode_ll.o ${COMPILE_OPTIONS}
 hipcc ${INCLUDE_PATHS} -c $(pwd)/csrc/deep_ep.cu -o build_/deep_ep.o ${COMPILE_OPTIONS}
 
-hipcc -Wno-unused-result -Wsign-compare -DNDEBUG -g -fwrapv -O2 -Wall -g -fstack-protector-strong -Wformat -Werror=format-security -g -fwrapv -O2 -shared -Wl,-O1 -Wl,-Bsymbolic-functions build_/internode.o build_/intranode.o build_/runtime.o build_/deep_ep.o build_/layout.o build_/internode_ll.o -L${SHMEM_INSTALL_PREFIX}/lib/ -L/opt/mpi/lib -L/opt/dtk/hip/lib -L/usr/lib/x86_64-linux-gnu -lhipblaslt -lamdhip64 -o deep_ep/deep_ep_cpp.cpython-310-x86_64-linux-gnu.so -Wl,-rpath,/opt/dtk/lib -fgpu-rdc --hip-link --offload-arch=gfx936 --offload-arch=gfx938 -shared -Wl,-soname,deep_ep/deep_ep_cpp.cpython-310-x86_64-linux-gnu.so -L"${llvm_path}/include/../lib/linux" -lclang_rt.builtins-x86_64 /opt/dtk/hip/lib/libgalaxyhip.so ${llvm_path}/lib/linux/libclang_rt.builtins-x86_64.a /opt/hyhal/lib/libhsa-runtime64.so -L${PYTHON_PLATLIB}/torch/lib -L/opt/dtk/lib -L/opt/dtk/hip/lib -L/usr/local/lib -lc10 -ltorch -ltorch_cpu -ltorch_python -lamdhip64 -lc10_hip -ltorch_hip -lrocm-core -lrocm_smi64 ${SHMEM_LINK_OPTIONS} -fgpu-rdc --hip-link -lamdhip64 -lhsa-runtime64 -l:libmpi.so -Wl,-rpath,/opt/mpi/lib/ -libverbs -lmlx5
+hipcc -Wno-unused-result -Wsign-compare -DNDEBUG -g -fwrapv -O2 -Wall -g -fstack-protector-strong -Wformat -Werror=format-security -g -fwrapv -O2 -shared -Wl,-O1 -Wl,-Bsymbolic-functions build_/internode.o build_/intranode.o build_/runtime.o build_/deep_ep.o build_/layout.o build_/internode_ll.o -L${SHMEM_INSTALL_PREFIX}/lib/ -L/opt/mpi/lib -L/opt/dtk/hip/lib -L/usr/lib/x86_64-linux-gnu -lhipblaslt -lamdhip64 -o deep_ep/deep_ep_cpp.cpython-310-x86_64-linux-gnu.so -Wl,-rpath,/opt/dtk/lib -fgpu-rdc --hip-link --offload-arch=$DETECTED_ARCH -shared -Wl,-soname,deep_ep/deep_ep_cpp.cpython-310-x86_64-linux-gnu.so -L"${llvm_path}/include/../lib/linux" -lclang_rt.builtins-x86_64 /opt/dtk/hip/lib/libgalaxyhip.so ${llvm_path}/lib/linux/libclang_rt.builtins-x86_64.a /opt/hyhal/lib/libhsa-runtime64.so -L${PYTHON_PLATLIB}/torch/lib -L/opt/dtk/lib -L/opt/dtk/hip/lib -L/usr/local/lib -lc10 -ltorch -ltorch_cpu -ltorch_python -lamdhip64 -lc10_hip -ltorch_hip -lrocm-core -lrocm_smi64 ${SHMEM_LINK_OPTIONS} -fgpu-rdc --hip-link -lamdhip64 -lhsa-runtime64 -l:libmpi.so -Wl,-rpath,/opt/mpi/lib/ -libverbs -lmlx5
 
 # build whl
 echo "Using Python: $(which python3)"

@@ -116,7 +116,11 @@ __device__ inline void shmem_long_atomic_add(
     rocshmem::rocshmem_long_atomic_add(dest, value, pe);
 }
 
-#if defined(ROCM_USE_MULTIQP)
+__device__ inline uint64_t shmem_get_p2p_ptr(void *dest, int rank, int dst_rank) {
+    return rocshmem::rocshmem_get_p2p_ptr(dest, rank, dst_rank);
+}
+
+#if !defined(ROCM_DISABLE_MULTIQP)
 __device__ inline void shmem_qp_quiet(int idx_qp) {
     rocshmem::rocshmem_quiet_dp(idx_qp);
 }
@@ -271,6 +275,20 @@ __device__ inline void shmem_long_atomic_add(
     long *dest, long value, int pe) {
     // dushmem_##Name##_atomic_add(dest, value, pe);
     dushmem_long_atomic_add(dest, value, pe);
+}
+
+__device__ __forceinline__ uint64_t shmem_get_p2p_ptr(void *dest, int rank, int dst_rank) {
+    // Local rank, no need for mapping
+    if (rank == dst_rank)
+        return reinterpret_cast<uint64_t>(dest);
+
+    auto peer_base = __ldg(reinterpret_cast<uint64_t*>(dushmemi_device_state_d.peer_heap_base_p2p) + dst_rank);
+    // RDMA connected
+    if (peer_base == 0)
+        return 0;
+
+    // NVLink P2P is enabled
+    return peer_base + (reinterpret_cast<uint64_t>(dest) - reinterpret_cast<uint64_t>(dushmemi_device_state_d.heap_base));
 }
 
 #endif
