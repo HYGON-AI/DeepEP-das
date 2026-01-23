@@ -84,7 +84,7 @@ __device__ __forceinline__ void
 internode_ll_putmem_nbi(void* dst_ptr, void* src_ptr,
                         int num_ranks, int dst_rank, int expert_idx,
                         int msg_bytes) {
-#if defined(FORCE_NVSHMEM_API)
+#if defined(FORCE_DUSHMEM_API)
         internode::shmemx_int8_put_nbi_warp(
             reinterpret_cast<signed char*>(dst_ptr), reinterpret_cast<signed char*>(src_ptr),
             msg_bytes, dst_rank);
@@ -98,7 +98,7 @@ internode_ll_putmem_nbi(void* dst_ptr, void* src_ptr,
             reinterpret_cast<signed char*>(dst_ptr), reinterpret_cast<signed char*>(src_ptr),
             msg_bytes, (expert_idx + 1) * num_ranks + dst_rank, dst_rank);
     #endif
-#endif // defined(FORCE_NVSHMEM_API)
+#endif // defined(FORCE_DUSHMEM_API)
 }
 
 __device__ __forceinline__ void 
