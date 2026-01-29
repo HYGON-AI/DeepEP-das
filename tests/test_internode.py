@@ -265,7 +265,7 @@ def test_loop(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
         ll_num_tokens, ll_hidden, ll_num_experts, ll_num_topk = 16, 5120, 256, 9
         num_rdma_bytes_ll = deep_ep.Buffer.get_low_latency_rdma_size_hint(ll_num_tokens, ll_hidden, num_ranks, ll_num_experts)
 
-    num_sms = 30
+    num_sms = 48
     num_qps_per_rank = max(num_sms, ll_num_experts // num_ranks if args.test_ll_compatibility else 0)
 
     hidden_bytes = get_hidden_bytes(args)
