@@ -177,7 +177,7 @@ public:
     std::tuple<torch::Tensor, std::optional<torch::Tensor>, torch::Tensor, torch::Tensor, torch::Tensor, std::optional<EventHandle>, std::optional<std::function<void()>>>
     low_latency_dispatch(const torch::Tensor& x, const torch::Tensor& topk_idx,
                          int num_max_dispatch_tokens_per_rank, int num_experts,
-                         bool use_fp8, bool round_scale, bool use_ue8m0, bool use_int8,
+                         int quant_type, int quant_group_size, bool fp8_round_scale,
                          bool async, bool return_recv_hook);
 
     std::tuple<torch::Tensor, std::optional<EventHandle>, std::optional<std::function<void()>>>

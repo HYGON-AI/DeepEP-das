@@ -841,7 +841,7 @@ class Buffer:
     # noinspection PyTypeChecker
     def low_latency_dispatch(self, x: torch.Tensor, topk_idx: torch.Tensor,
                              num_max_dispatch_tokens_per_rank: int, num_experts: int,
-                             use_fp8: bool = True, round_scale: bool = False, use_ue8m0: bool = False, use_int8: bool = False,
+                             quant_type: int = 1, quant_group_size: int = 0, fp8_round_scale: bool = False,
                              async_finish: bool = False, return_recv_hook: bool = False) -> \
             Tuple[Tuple[torch.Tensor, torch.Tensor], torch.Tensor, Tuple, EventOverlap, Callable]:
         """
@@ -858,10 +858,20 @@ class Buffer:
                 only several top-k shapes are supported. `-1` indices (not selecting any expert) are supported.
             num_max_dispatch_tokens_per_rank: the maximum number of tokens to dispatch, all the ranks must hold the same value.
             num_experts: the number of all experts.
-            use_fp8: whether to enable FP8 casting, with this, the received data will be a tuple of FP8 tensor and scaling factors.
-            round_scale: whether round the scaling factors into power of 2.
-            use_ue8m0: whether use UE8M0 as scaling factor format (available only with `round_scale=True`).
-            use_int8: whether to enable INT8 casting.
+            量化配置
+            quant_type:          int 量化类型枚举
+                                 0 -> None          不量化，保持原始精度
+                                 1 -> Int8          使用 INT8 对称量化
+                                 2 -> FP8_E4M3      使用 FP8 E4M3 格式 (__HIP_E4M3_FNUZ)
+                                 3 -> FP8_UE8M0     使用 DeepSeekV3.1 提出的 UE8M0 格式 (仅支持round_scale=True)
+                                 4 -> FP8_E5M2      使用 FP8 E5M2 格式 (__HIP_E5M2_FNUZ)
+            quant_group_size:    int 量化分组大小
+                                 0  -> 逐token量化 (per-channel) 
+                                 128-> 每 128 元素一组 (per-group) 量化
+            fp8_round_scale:     bool 是否将 FP8 缩放因子取整为 2 的幂
+                                 true  -> 缩放因子 = 2^k，硬件零开销
+                                 false -> 缩放因子 = 任意浮点，精度更高
+            异步配置
             async_finish: the current stream will not wait for the communication kernels to be finished if set.
             return_recv_hook: return a receiving hook if set. If set, the kernel will just do the RDMA request issues,
                 but **without actually receiving the data**. You must call the received hook to make sure the data's arrival.
@@ -869,15 +879,25 @@ class Buffer:
 
         Returns:
             recv_x: a tensor or tuple with received tokens for each expert.
-                With `use_fp8=True`: the first element is a `torch.Tensor` shaped as
-                `[num_local_experts, num_max_dispatch_tokens_per_rank * num_ranks, hidden]` with `torch.float8_e4m3fn`.
-                The second tensor is the corresponding scales for the first element with shape
-                `[num_local_experts, num_max_dispatch_tokens_per_rank * num_ranks, hidden // 128]` with `torch.float`,
-                if `use_ue8m0=False`. With `use_ue8m0=True`, the second one is packed and shaped as
-                `[num_local_experts, num_max_dispatch_tokens_per_rank * num_ranks, hidden // 512]` with type `torch.int`.
-                Notice that, the last-two-dimension of the scaling tensors are in column-major for TMA compatibility.
-                With `use_fp8=False`, the result would be a tensor shaped as
-                `[num_local_experts, num_max_dispatch_tokens_per_rank * num_ranks, hidden]` with `torch.bfloat16`.
+                - packed_recv_x:
+                     存储接收到的 Token 数据，形状为
+                     `[num_local_experts, num_ranks * num_max_dispatch_tokens_per_rank, hidden]`。
+                     数据类型取决于 quant_type：
+                      quant_type == 1 -> torch.int8
+                         quant_type == 2 -> torch.float8_e4m3fnuz
+                         quant_type == 3 -> torch.float8_e4m3fnuz (UE8M0 使用 E4M3 格式存储)
+                         quant_type == 4 -> torch.float8_e5m2fnuz
+                         其他 (非量化)   -> torch.bfloat16
+                - packed_recv_x_scales (可选):
+                     仅在 quant_type > 0 时存在，存储量化的 Scale 值。
+                     形状为 `[num_local_experts, num_ranks * num_max_dispatch_tokens_per_rank, scales_col_size]`。
+                     - 当 quant_type == 3 (UE8M0) 时:
+                         scales_col_size = hidden // 512
+                         数据类型为 torch.int (内部打包存储 4-bit scale)。
+                         *注意：此模式强制要求 fp8_round_scale=True 且 group_size=128。
+                     - 当 quant_type == 1, 2, 4 时:
+                         scales_col_size = hidden // 128 (若使用 group_size) 或 1 (per-channel)。
+                         数据类型为 torch.float32。
                 Moreover, not all tokens are valid, only some of the `num_max_dispatch_tokens_per_rank * num_ranks` are,
                 as we do not synchronize CPU received count with GPU (also not incompatible with CUDA graph if synced).
             recv_count: a tensor shaped `[num_local_experts]` with type `torch.int`, indicating how many tokens each
@@ -889,14 +909,15 @@ class Buffer:
         packed_recv_x, packed_recv_x_scales, packed_recv_count, packed_recv_src_info, packed_recv_layout_range, event, hook = \
             self.runtime.low_latency_dispatch(x, topk_idx,
                                               num_max_dispatch_tokens_per_rank, num_experts,
-                                              use_fp8, round_scale, use_ue8m0, use_int8,
+                                              quant_type, quant_group_size, fp8_round_scale,
                                               async_finish, return_recv_hook)
         handle = (packed_recv_src_info, packed_recv_layout_range, num_max_dispatch_tokens_per_rank, x.size(1), num_experts)
         tensors_to_record = (x, topk_idx,
                              packed_recv_x, packed_recv_x_scales, packed_recv_count,
                              packed_recv_src_info, packed_recv_layout_range)
-        return (packed_recv_x, packed_recv_x_scales) if use_fp8 else packed_recv_x, packed_recv_count, handle, \
-            EventOverlap(event, tensors_to_record if async_finish else None), hook
+
+        recv_x = (packed_recv_x, packed_recv_x_scales) if (quant_type > 0) else packed_recv_x
+        return recv_x, packed_recv_count, handle, EventOverlap(event, tensors_to_record if async_finish else None), hook
 
     # noinspection PyTypeChecker
     def low_latency_combine(self, x: torch.Tensor, topk_idx: torch.Tensor, topk_weights: torch.Tensor,

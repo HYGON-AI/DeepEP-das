@@ -341,10 +341,14 @@ __device__ __forceinline__ dtype_t broadcast(dtype_t &ptr, int src_lane_idx) {
     return *reinterpret_cast<dtype_t *>(recv_int_values);
 }
 
-constexpr float kFP8Margin = 1e-4;
+// 设置不同的量化方式的最大值与相反数
+constexpr float kFP8Margin = 0.0;
 constexpr float kFinfoAmaxE4M3 = 240.0f;
 constexpr float kFinfoAmaxInvE4M3 = 1.0f / kFinfoAmaxE4M3;
-constexpr float kInt8Amax = 127.0f;
+constexpr float kFinfoAmaxE5M2 = 57344.0f; 
+constexpr float kFinfoAmaxInvE5M2 = 1.0f / kFinfoAmaxE5M2;
+constexpr float kFinfoAmaxInt8 = 127.0f;
+constexpr float kFinfoAmaxInvInt8 = 1.0f / 127.0f;
 
 __forceinline__ __device__ float fast_pow2(int x) {
     // We can ensure `-126 <= x and x <= 127`
@@ -359,20 +363,31 @@ __forceinline__ __device__ int fast_log2_ceil(float x) {
     return exp_x - 127 + (man_bits != 0);
 }
 
-__forceinline__ __device__ void calculate_fp8_scales(float amax, float& scale, float& scale_inv, bool round_scale) {
-    if (round_scale) {
-        auto exp_scale_inv = fast_log2_ceil(amax * kFinfoAmaxInvE4M3);
-        scale = fast_pow2(-exp_scale_inv);
-        scale_inv = fast_pow2(exp_scale_inv);
-    } else {
-        scale_inv = amax * kFinfoAmaxInvE4M3;
-        scale = kFinfoAmaxE4M3 / amax;
+template <int kQuantType>
+__forceinline__ __device__ void calculate_quant8bit_scales(float amax, float& scale, float& scale_inv, bool round_scale=0) {
+    amax = fmaxf(amax, 1e-6f);
+    if constexpr(kQuantType == 1) { // 使用 INT8 对称量化
+        scale_inv = kFinfoAmaxInvInt8 * amax;
+        scale = kFinfoAmaxInt8 / amax;
+    } else if constexpr(kQuantType == 2 || kQuantType == 3) {   // 使用 FP8_E4M3 或 FP8_UE8M0 非对称量化
+        if (round_scale) {
+            auto exp_scale_inv = fast_log2_ceil(amax * kFinfoAmaxInvE4M3);
+            scale = fast_pow2(-exp_scale_inv);
+            scale_inv = fast_pow2(exp_scale_inv);
+        } else {
+            scale_inv = amax * kFinfoAmaxInvE4M3;
+            scale = kFinfoAmaxE4M3 / amax;
+        }
+    } else if constexpr(kQuantType == 4) { // 使用 FP8_E5M2 对称量化
+        if (round_scale) {
+            auto exp_scale_inv = fast_log2_ceil(amax * kFinfoAmaxInvE5M2);
+            scale = fast_pow2(-exp_scale_inv);
+            scale_inv = fast_pow2(exp_scale_inv);
+        } else {
+            scale_inv = amax * kFinfoAmaxInvE5M2;
+            scale = kFinfoAmaxE5M2 / amax;
+        }
     }
-}
-
-__forceinline__ __device__ void calculate_int8_scales(float amax, float& scale, float& scale_inv) {
-    scale = kInt8Amax / amax;
-    scale_inv = amax / kInt8Amax;
 }
 
 template <bool kIsUE8M0, typename out_dtype_t = std::conditional_t<kIsUE8M0, uint8_t, float>>

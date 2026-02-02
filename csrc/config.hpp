@@ -136,7 +136,7 @@ struct LowLatencyLayout {
 
     LowLatencyLayout(void *rdma_buffer, int num_max_dispatch_tokens_per_rank, int hidden,
                      int num_ranks, int num_experts) {
-        const int num_scales = hidden / FP8_QUANTIZATION_NUM_PER_CHANNEL;
+        const int num_scales = hidden / QUANTIZATION_GROUPSIZE;
 
         // Dispatch and combine layout:
         //  - 2 symmetric odd/even send buffer

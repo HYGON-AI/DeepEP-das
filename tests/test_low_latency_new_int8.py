@@ -54,16 +54,16 @@ def test_main(num_tokens: int,
     do_check = True
     hash_value, num_times = 0, 0
     for current_x in x_list:
-        for return_recv_hook in (False, ):
-            for dispatch_use_fp8 in (True, ):
-                for round_scale in (False, ):
-                    for use_ue8m0 in (False, ):
+        for return_recv_hook in (False, True):
+            for quant_type in (1, ):
+                for fp8_round_scale in (False, ):
+                    for quant_group_size in (0, ):
+                        dispatch_use_fp8 = quant_type > 0
                         num_times += 1
-                        use_int8 = True
                         for _ in range(1):
                             packed_recv_x, packed_recv_count, handle, event, hook = \
                                 buffer.low_latency_dispatch(current_x, topk_idx, num_tokens, num_experts,
-                                                            use_fp8=dispatch_use_fp8, round_scale=round_scale, use_ue8m0=use_ue8m0, use_int8=use_int8,
+                                                            quant_type=quant_type, quant_group_size=quant_group_size,
                                                             async_finish=not return_recv_hook, return_recv_hook=return_recv_hook)
                             hook() if return_recv_hook else event.current_stream_wait()
 
@@ -97,9 +97,7 @@ def test_main(num_tokens: int,
 
                                 assert torch.equal(recv_x_amin, recv_x_amax)
 
-                                if round_scale:
-                                    assert calc_diff(recv_x[:, -1], recv_src_info.view(-1)) < 0.007
-                                elif use_int8:
+                                if quant_type == 1:
                                     assert calc_diff(recv_x[:, -1], recv_src_info.view(-1)) < 0.01
                                 else:
                                     assert (recv_x[:, -128:] - recv_src_info.view(-1, 1) % num_tokens).sum().item() == 0
@@ -131,7 +129,7 @@ def test_main(num_tokens: int,
     def test_func(return_recv_hook: bool):
         recv_x, recv_count, handle, event, hook = \
             buffer.low_latency_dispatch(current_x, topk_idx, num_tokens, num_experts,
-                                        use_fp8=True, round_scale=False, use_ue8m0=False, use_int8=True,
+                                        quant_type=1, quant_group_size=0,
                                         async_finish=False, return_recv_hook=return_recv_hook)
         large_gemm_with_hook(hook) if return_recv_hook else None
         combined_x, event, hook = buffer.low_latency_combine(simulated_gemm_x,

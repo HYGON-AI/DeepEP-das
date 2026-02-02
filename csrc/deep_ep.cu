@@ -1293,7 +1293,7 @@ void Buffer::clean_low_latency_buffer(int num_max_dispatch_tokens_per_rank, int 
 std::tuple<torch::Tensor, std::optional<torch::Tensor>, torch::Tensor, torch::Tensor, torch::Tensor, std::optional<EventHandle>, std::optional<std::function<void()>>>
 Buffer::low_latency_dispatch(const torch::Tensor& x, const torch::Tensor& topk_idx,
                              int num_max_dispatch_tokens_per_rank, int num_experts,
-                             bool use_fp8, bool round_scale, bool use_ue8m0, bool use_int8,
+                             int quant_type, int quant_group_size, bool fp8_round_scale,
                              bool async, bool return_recv_hook) {
     EP_HOST_ASSERT(low_latency_mode);
 
@@ -1327,8 +1327,15 @@ Buffer::low_latency_dispatch(const torch::Tensor& x, const torch::Tensor& topk_i
         stream_wait(launch_stream, compute_stream);
 
     // Allocate packed tensors
-    auto packed_recv_x = torch::empty({num_local_experts, num_ranks * num_max_dispatch_tokens_per_rank, hidden},
-                                      x.options().dtype(use_int8 ? torch::kInt8 : use_fp8 ? torch::kFloat8_e4m3fnuz: torch::kBFloat16));
+    auto packed_recv_x_dtype = torch::kBFloat16;
+    switch (quant_type) {
+        case 1: packed_recv_x_dtype = torch::kInt8;             break;
+        case 2: packed_recv_x_dtype = torch::kFloat8_e4m3fnuz;  break;
+        case 3: packed_recv_x_dtype = torch::kFloat8_e4m3fnuz;  break;
+        case 4: packed_recv_x_dtype = torch::kFloat8_e5m2fnuz;  break;
+    }
+    
+    auto packed_recv_x = torch::empty({num_local_experts, num_ranks * num_max_dispatch_tokens_per_rank, hidden}, x.options().dtype(packed_recv_x_dtype));
     auto packed_recv_src_info = torch::empty({num_local_experts, num_ranks * num_max_dispatch_tokens_per_rank}, torch::dtype(torch::kInt32).device(torch::kCUDA));
     auto packed_recv_layout_range = torch::empty({num_local_experts, num_ranks}, torch::dtype(torch::kInt64).device(torch::kCUDA));
     auto packed_recv_count = torch::empty({num_local_experts}, torch::dtype(torch::kInt32).device(torch::kCUDA));
@@ -1336,21 +1343,28 @@ Buffer::low_latency_dispatch(const torch::Tensor& x, const torch::Tensor& topk_i
     // Allocate column-majored scales
     auto packed_recv_x_scales = std::optional<torch::Tensor>();
     void* packed_recv_x_scales_ptr = nullptr;
-    if (use_fp8) {
+    if (quant_type > 0) {
         EP_HOST_ASSERT((num_ranks * num_max_dispatch_tokens_per_rank) % 4 == 0 and "TMA requires the number of tokens to be multiple of 4");
         // TODO: support unaligned cases
-        EP_HOST_ASSERT(hidden % (FP8_QUANTIZATION_NUM_PER_CHANNEL * 4) == 0);
-        EP_HOST_ASSERT(!(use_ue8m0 && use_int8));
+        EP_HOST_ASSERT(hidden % (QUANTIZATION_GROUPSIZE * 4) == 0);
+        
+        // 计算scale_col的大小
+        int scales_col_size = 1;    // 默认为per-channel
+        if (quant_group_size > 0) {
+            if (quant_type == 3) {  // FP8_UE8M0比较特殊
+                scales_col_size = hidden / (QUANTIZATION_GROUPSIZE * 4);
+            } else {
+                scales_col_size = hidden / QUANTIZATION_GROUPSIZE;
+            }
+        }
 
-        if (use_ue8m0) {
-            EP_HOST_ASSERT(round_scale);
-            packed_recv_x_scales = torch::empty({num_local_experts, hidden / (FP8_QUANTIZATION_NUM_PER_CHANNEL * 4), num_ranks * num_max_dispatch_tokens_per_rank},
+        // 设置packed_recv_x_scales
+        if (quant_type == 3) {  // FP8_UE8M0比较特殊，需要单独处理
+            EP_HOST_ASSERT(fp8_round_scale && quant_group_size == 128);
+            packed_recv_x_scales = torch::empty({num_local_experts, scales_col_size, num_ranks * num_max_dispatch_tokens_per_rank},
                                                 torch::dtype(torch::kInt).device(torch::kCUDA));
-        } else if (use_int8) {
-            packed_recv_x_scales = torch::empty({num_local_experts, 1, num_ranks * num_max_dispatch_tokens_per_rank},
-                                                torch::dtype(torch::kFloat32).device(torch::kCUDA));
         } else {
-            packed_recv_x_scales = torch::empty({num_local_experts, hidden / FP8_QUANTIZATION_NUM_PER_CHANNEL, num_ranks * num_max_dispatch_tokens_per_rank},
+            packed_recv_x_scales = torch::empty({num_local_experts, scales_col_size, num_ranks * num_max_dispatch_tokens_per_rank},
                                                 torch::dtype(torch::kFloat32).device(torch::kCUDA));
         }
         packed_recv_x_scales = torch::transpose(packed_recv_x_scales.value(), 1, 2);
@@ -1370,7 +1384,7 @@ Buffer::low_latency_dispatch(const torch::Tensor& x, const torch::Tensor& topk_i
                             next_clean_meta.first, next_clean_meta.second,
                             num_tokens, hidden, num_max_dispatch_tokens_per_rank,
                             num_topk, num_experts, rank, num_ranks,
-                            use_fp8, round_scale, use_ue8m0, use_int8,
+                            quant_type, quant_group_size, fp8_round_scale,
                             workspace, num_device_sms, launch_stream, phases);
     };
     launcher(return_recv_hook ? LOW_LATENCY_SEND_PHASE : (LOW_LATENCY_SEND_PHASE | LOW_LATENCY_RECV_PHASE));
