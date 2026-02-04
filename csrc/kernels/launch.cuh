@@ -62,7 +62,7 @@ inline void LAUNCH_KERNEL_NON_COOPERATIVE(T &&config, Kern &&kernel, Args &&...a
     case 8:                                                                                        \
         case_macro(8);                                                                             \
     default:                                                                                       \
-        EP_HOST_ASSERT(false and "Unsupported ranks");                                         \
+        EP_HOST_ASSERT(false and "Unsupported ranks");                                             \
     }                                                                                              \
     while (false)
 
@@ -83,7 +83,7 @@ inline void LAUNCH_KERNEL_NON_COOPERATIVE(T &&config, Kern &&kernel, Args &&...a
     case 20:                                                                                       \
         case_macro(20);                                                                            \
     default:                                                                                       \
-        EP_HOST_ASSERT(false and "Unsupported RDMA ranks");                                       \
+        EP_HOST_ASSERT(false and "Unsupported RDMA ranks");                                        \
     }                                                                                              \
     while (false)
 
@@ -96,7 +96,7 @@ inline void LAUNCH_KERNEL_NON_COOPERATIVE(T &&config, Kern &&kernel, Args &&...a
     case 8:                                                                                        \
         case_macro(dtype, 8);                                                                      \
     default:                                                                                       \
-        EP_HOST_ASSERT(false and "Unsupported ranks");                                            \
+        EP_HOST_ASSERT(false and "Unsupported ranks");                                             \
     }                                                                                              \
     while (false)
 
@@ -107,7 +107,7 @@ inline void LAUNCH_KERNEL_NON_COOPERATIVE(T &&config, Kern &&kernel, Args &&...a
     case HIP_R_32F:                                                                                \
         case_macro(float);                                                                         \
     default:                                                                                       \
-        EP_HOST_ASSERT(false and "Unsupported type");                                             \
+        EP_HOST_ASSERT(false and "Unsupported type");                                              \
     }                                                                                              \
     while (false)
 
@@ -121,7 +121,9 @@ inline void LAUNCH_KERNEL_NON_COOPERATIVE(T &&config, Kern &&kernel, Args &&...a
         case_macro(4096);                                                                          \
     case 7168:                                                                                     \
         case_macro(7168);                                                                          \
+    case 8192:                                                                                     \
+        case_macro(8192);                                                                          \
     default:                                                                                       \
-        EP_HOST_ASSERT(false and "Unsupported hidden");                                           \
+        EP_HOST_ASSERT(false and "Unsupported hidden");                                            \
     }                                                                                              \
     while (false)
