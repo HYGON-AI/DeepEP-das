@@ -57,28 +57,22 @@ def per_token_cast_to_fp8(x: torch.Tensor):
     return (x_padded_view * (448.0 / x_amax.unsqueeze(2))).to(torch.float8_e4m3fn).view(m, aligned_n)[:, :n].contiguous(), (x_amax / 448.0).view(m, -1)
 
 
-def per_token_cast_back(x_fp8: torch.Tensor, x_scales: torch.Tensor):
-    if x_fp8.numel() == 0:
-        return x_fp8.to(torch.bfloat16)
+def per_token_cast_pg_back(x: torch.Tensor, x_scales: torch.Tensor):
+    if x.numel() == 0:
+        return x.to(torch.bfloat16)
 
-    assert x_fp8.dim() == 2
-    m, n = x_fp8.shape
+    assert x.dim() == 2
+    m, n = x.shape
     aligned_n = align_up(n, 128)
-    x_fp8_padded = torch.nn.functional.pad(x_fp8, (0, aligned_n - n), mode='constant', value=0)
+    x_padded = torch.nn.functional.pad(x, (0, aligned_n - n), mode='constant', value=0)
     if x_scales.dtype == torch.int:
         x_scales = x_scales.view(dtype=torch.uint8).to(torch.int) << 23
         x_scales = x_scales.view(dtype=torch.float)
-    x_fp32_padded = x_fp8_padded.to(torch.float32).view(x_fp8.size(0), -1, 128)
-    x_scales = x_scales.view(x_fp8.size(0), -1, 1)
-    return (x_fp32_padded * x_scales).view(x_fp8_padded.shape).to(torch.bfloat16)[:,:n].contiguous()
+    x_fp32_padded = x_padded.to(torch.float32).view(x.size(0), -1, 128)
+    x_scales = x_scales.view(x.size(0), -1, 1)
+    return (x_fp32_padded * x_scales).view(x_padded.shape).to(torch.bfloat16)[:,:n].contiguous()
 
-
-def per_token_cast_back_int8(x_int8: torch.Tensor, x_scales: torch.Tensor):
-    """
-    x_int8: [m, n] int8 tensor
-    x_scales: [m, n] 或 [m, 1] 或 [m, n/128] 量化 scale float
-    return: [m, n] bf16 tensor
-    """
+def per_token_cast_pc_back(x_int8: torch.Tensor, x_scales: torch.Tensor):
     if x_int8.numel() == 0:
         return x_int8.to(torch.bfloat16)
 
@@ -86,12 +80,9 @@ def per_token_cast_back_int8(x_int8: torch.Tensor, x_scales: torch.Tensor):
     m, n = x_int8.shape
     aligned_n = align_up(n, 128)
 
-    x_int8_padded = torch.nn.functional.pad(
-        x_int8, (0, aligned_n - n), mode='constant', value=0
-    )
+    x_int8_padded = torch.nn.functional.pad(x_int8, (0, aligned_n - n), mode='constant', value=0)
     x_fp32_padded = x_int8_padded.to(torch.float32).view(m, -1, 1)
     x_scales = x_scales.view(m, -1, 1).to(torch.float32)
-    # print(f'x_int8.shape: {x_int8.shape}, x_fp32_padded: {x_fp32_padded.shape}, x_scales: {x_scales.shape}')
     x_deq = (x_fp32_padded * x_scales).view(m, aligned_n)
     return x_deq[:, :n].to(torch.bfloat16).contiguous()
 

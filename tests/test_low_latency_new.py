@@ -6,7 +6,7 @@ from functools import partial
 from typing import Literal, Set
 
 import deep_ep
-from utils import init_dist, bench, bench_kineto, calc_diff, hash_tensor, per_token_cast_back
+from utils import init_dist, bench, bench_kineto, calc_diff, hash_tensor, per_token_cast_pg_back, per_token_cast_pc_back
 
 
 def simulate_failure_and_skip(rank: int, api: Literal["dispatch", "combine", "clean"], expected_masked_ranks: Set[int]):
@@ -81,12 +81,11 @@ def test_main(num_tokens: int,
     hash_value, num_times = 0, 0
     for current_x in x_list:
         for return_recv_hook in (False, True):
-            for quant_type in (0, 2, 3, ): # 0: 不量化, 2: FP8_E4M3, 3: FP8_UE8M0 (仅支持round_scale=True)
-                dispatch_use_fp8 = quant_type > 0
-                for fp8_round_scale in (False, True) if dispatch_use_fp8 else (False, ):
-                    for quant_group_size in (128, ):
-                        # 跳过不支持的情况
-                        if quant_type == 3 and fp8_round_scale == False:
+            for quant_type in (0, 1, 2, 3, ): # 0: 不量化, 1: int8, 2: FP8_E4M3, 3: FP8_UE8M0 (仅支持round_scale=True), 4: FP8_E5M2
+                dispatch_use_quant = quant_type > 0
+                for fp8_round_scale in (False, True) if quant_type != 3 else (True, ):
+                    for quant_group_size in (0, 128,) if quant_type >= 2 else (0, ):
+                        if quant_type == 3 and (fp8_round_scale == False or quant_group_size == 0):
                             continue
 
                         num_times += 1
@@ -96,12 +95,21 @@ def test_main(num_tokens: int,
                                                             quant_type=quant_type, fp8_round_scale=fp8_round_scale, quant_group_size=quant_group_size,
                                                             async_finish=not return_recv_hook, return_recv_hook=return_recv_hook)
                             hook() if return_recv_hook else event.current_stream_wait()
-                        packed_recv_x = (packed_recv_x[0], packed_recv_x[1].contiguous()) if dispatch_use_fp8 else packed_recv_x
-                        simulated_gemm_x = per_token_cast_back(packed_recv_x[0].view(-1, hidden), packed_recv_x[1].view(-1, hidden // 128)).view(packed_recv_x[0].shape) \
-                            if dispatch_use_fp8 else packed_recv_x.clone()
+                        packed_recv_x = (packed_recv_x[0], packed_recv_x[1].contiguous()) if dispatch_use_quant else packed_recv_x
+                        if not dispatch_use_quant:
+                            simulated_gemm_x = packed_recv_x.clone()
+                        elif quant_group_size == 0:
+                            simulated_gemm_x = per_token_cast_pc_back(packed_recv_x[0].view(-1, hidden), packed_recv_x[1].reshape(-1)).view(packed_recv_x[0].shape)
+                        elif quant_group_size == 128:
+                            simulated_gemm_x = per_token_cast_pg_back(packed_recv_x[0].view(-1, hidden), packed_recv_x[1].view(-1, hidden // 128)).view(packed_recv_x[0].shape)
                         for i in range(num_local_experts if do_check else 0):
                             expert_id = rank * num_local_experts + i
-                            recv_x = per_token_cast_back(packed_recv_x[0][i], packed_recv_x[1][i]) if dispatch_use_fp8 else packed_recv_x[i]
+                            if not dispatch_use_quant:
+                                recv_x = packed_recv_x[i]
+                            elif quant_group_size == 0:
+                                recv_x = per_token_cast_pc_back(packed_recv_x[0][i], packed_recv_x[1][i])
+                            elif quant_group_size == 128:
+                                recv_x = per_token_cast_pg_back(packed_recv_x[0][i], packed_recv_x[1][i])
                             recv_count, recv_src_info, recv_layout_range = packed_recv_count[i], handle[0][i], handle[1][i]
 
                             # Check expert indices
@@ -119,18 +127,25 @@ def test_main(num_tokens: int,
                             if current_x is x:
                                 recv_x = recv_x[:num_valid_tokens]
                                 recv_x_amin = recv_x[:, :-128].amin(dim=-1)
+                                recv_x_amax = recv_x[:, :-128].amax(dim=-1)
                                 recv_src_info = recv_src_info[:num_valid_tokens]
-                                assert torch.equal(recv_x_amin, recv_x[:, :-128].amax(dim=-1))
-                                if fp8_round_scale:
+                                assert torch.equal(recv_x_amin, recv_x_amax)
+                                
+                                if dispatch_use_quant:
                                     assert calc_diff(recv_x[:, -1], recv_src_info.view(-1)) < 0.007
-                                else:
-                                    assert (recv_x[:, -128:] - recv_src_info.view(-1, 1) % num_tokens).sum().item() == 0
-                                for j in range(num_ranks):
-                                    begin_idx, count = (recv_layout_range[j] >> 32).item(), (recv_layout_range[j] & int_mask).item()
-                                    if not fp8_round_scale:
-                                        assert (recv_x_amin == j - rank_offset).sum().item() == (all_topk_idx[j] == expert_id).sum().item()
-                                        assert (recv_x[begin_idx:begin_idx + count, :-128] - j + rank_offset).sum().item() == 0
-                            if dispatch_use_fp8:
+
+                                assert torch.equal(recv_x_amin, recv_x[:, :-128].amax(dim=-1))
+                                if quant_group_size != 0:
+                                    if fp8_round_scale:
+                                        assert calc_diff(recv_x[:, -1], recv_src_info.view(-1)) < 0.007
+                                    else:
+                                        assert (recv_x[:, -128:] - recv_src_info.view(-1, 1) % num_tokens).sum().item() == 0
+                                    for j in range(num_ranks):
+                                        begin_idx, count = (recv_layout_range[j] >> 32).item(), (recv_layout_range[j] & int_mask).item()
+                                        if not fp8_round_scale:
+                                            assert (recv_x_amin == j - rank_offset).sum().item() == (all_topk_idx[j] == expert_id).sum().item()
+                                            assert (recv_x[begin_idx:begin_idx + count, :-128] - j + rank_offset).sum().item() == 0
+                            if dispatch_use_quant:
                                 hash_value ^= hash_tensor(packed_recv_x[0][i, :num_valid_tokens])
                                 hash_value ^= hash_tensor(packed_recv_x[1][i, :num_valid_tokens])
                             else:
@@ -154,7 +169,7 @@ def test_main(num_tokens: int,
                                 diff = calc_diff(current_x * topk_weights.masked_fill(topk_idx == -1, 0).sum(dim=1).view(-1, 1), combined_x)
                                 assert torch.isnan(combined_x).sum().item() == 0
                                 # if not fp8_round_scale:
-                                assert diff < (9e-4 if dispatch_use_fp8 else 1e-5), f'Error: diff={diff}, dispatch_use_fp8={dispatch_use_fp8}, zero_copy={zero_copy}'
+                                assert diff < (9e-4 if dispatch_use_quant else 1e-5), f'Error: diff={diff}, dispatch_use_quant={dispatch_use_quant}, zero_copy={zero_copy}'
                                 hash_value ^= hash_tensor(combined_x)
 
     # noinspection PyShadowingNames
@@ -168,7 +183,7 @@ def test_main(num_tokens: int,
     def test_func(return_recv_hook: bool):
         recv_x, recv_count, handle, event, hook = \
             buffer.low_latency_dispatch(current_x, topk_idx, num_tokens, num_experts,
-                                        quant_type=2, quant_group_size=128,
+                                        quant_type=2, quant_group_size=0,
                                         async_finish=False, return_recv_hook=return_recv_hook)
         large_gemm_with_hook(hook) if return_recv_hook else None
         combined_x, event, hook = buffer.low_latency_combine(simulated_gemm_x,
