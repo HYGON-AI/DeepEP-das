@@ -1330,9 +1330,9 @@ Buffer::low_latency_dispatch(const torch::Tensor& x, const torch::Tensor& topk_i
     auto packed_recv_x_dtype = torch::kBFloat16;
     switch (quant_type) {
         case 1: packed_recv_x_dtype = torch::kInt8;             break;
-        case 2: packed_recv_x_dtype = torch::kFloat8_e4m3fnuz;  break;
-        case 3: packed_recv_x_dtype = torch::kFloat8_e4m3fnuz;  break;
-        case 4: packed_recv_x_dtype = torch::kFloat8_e5m2fnuz;  break;
+        case 2: packed_recv_x_dtype = torch::kFloat8_e4m3fn;    break;
+        case 3: packed_recv_x_dtype = torch::kFloat8_e4m3fn;    break;
+        case 4: packed_recv_x_dtype = torch::kFloat8_e5m2;      break;
     }
     
     auto packed_recv_x = torch::empty({num_local_experts, num_ranks * num_max_dispatch_tokens_per_rank, hidden}, x.options().dtype(packed_recv_x_dtype));

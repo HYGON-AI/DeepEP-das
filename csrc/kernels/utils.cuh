@@ -342,8 +342,7 @@ __device__ __forceinline__ dtype_t broadcast(dtype_t &ptr, int src_lane_idx) {
 }
 
 // 设置不同的量化方式的最大值与相反数
-constexpr float kFP8Margin = 0.0;
-constexpr float kFinfoAmaxE4M3 = 240.0f;
+constexpr float kFinfoAmaxE4M3 = 448.0f;
 constexpr float kFinfoAmaxInvE4M3 = 1.0f / kFinfoAmaxE4M3;
 constexpr float kFinfoAmaxE5M2 = 57344.0f; 
 constexpr float kFinfoAmaxInvE5M2 = 1.0f / kFinfoAmaxE5M2;
