@@ -210,13 +210,13 @@ __global__ __launch_bounds__(16 * kWarpSize, 1) void
     // Message package: hidden data, FP8 scales, index at source
     // NOTES: currently we have 3 reserved int fields for future use
     using vec_t = typename std::conditional<kUseQuant8Bit, int2, int4>::type;
-    constexpr size_t num_bytes_per_msg = sizeof(int4) + (kUseQuant8Bit ? (kHidden + kNumScales * sizeof(float)) : (kHidden * sizeof(hip_bfloat16)));
+    constexpr size_t num_bytes_per_msg = sizeof(int4) + 
+        (kUseQuant8Bit ? (kHidden + (kQuantGroupSize == 0 ? 4 : kNumScales) * sizeof(float)) : (kHidden * sizeof(hip_bfloat16)));
     EP_STATIC_ASSERT(num_bytes_per_msg % sizeof(int4) == 0, "Invalid message size");
     constexpr size_t num_int4_per_msg = num_bytes_per_msg / sizeof(int4);
 
     // Expert counts
-    constexpr int kNumMaxWarpGroups = 1024 / kWarpSize;
-    __shared__ int shared_num_tokens_sent_per_expert[kNumMaxWarpGroups];
+    __shared__ int shared_num_tokens_sent_per_expert[kMaxNumWarps];
 
     // Sending phase
     if ((phases & LOW_LATENCY_SEND_PHASE) == 0)
@@ -230,7 +230,7 @@ __global__ __launch_bounds__(16 * kWarpSize, 1) void
         constexpr int kNumThreadPerGroup = QUANTIZATION_GROUPSIZE / kNumElemsPerRead;
         // EP_DEVICE_ASSERT(kHidden % kNumElemsPerRead == 0);
         EP_STATIC_ASSERT(kNumElemsPerRead * kWarpSize % kNumPerChannels == 0, "Invalid vectorization");
-        const auto num_threads = (num_warps - 1) * kWarpSize;
+        const auto num_threads = num_warps * kWarpSize;
         constexpr int hidden_bf16_int4 = kHidden / kNumElemsPerRead;
 
         for (int token_idx = sm_id; token_idx < num_tokens; token_idx += num_sms) {
@@ -375,7 +375,7 @@ __global__ __launch_bounds__(16 * kWarpSize, 1) void
                 atomic_add_release_global(atomic_finish_counter_per_expert + i, FINISHED_SUM_TAG);
         }
         // This SM should be responsible for some destination experts, read `topk_idx` for them
-        int expert_count[kNumMaxWarpGroups] = {0};
+        int expert_count[kMaxNumWarps] = {0};
         const auto expert_begin_idx = sm_id * num_warp_groups;
         const auto expert_end_idx = min(expert_begin_idx + num_warp_groups, num_experts);
 
@@ -465,7 +465,7 @@ LOW_LATENCY_DISPATCH_RECV:
                                        (kQuantGroupSize == 0 ? 1 : num_aligned_scales);
 
         // Shared between sub-warps in warp groups
-        __shared__ int shared_num_recv_tokens[kNumMaxWarpGroups], shared_recv_token_begin_idx[kNumMaxWarpGroups];
+        __shared__ int shared_num_recv_tokens[kMaxNumWarps], shared_recv_token_begin_idx[kMaxNumWarps];
 
         // Wait tokens to arrive
         // NOTES: using sub-warp 1 to overlap with sub-warp 0

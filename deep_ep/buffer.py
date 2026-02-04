@@ -212,7 +212,7 @@ class Buffer:
 
     @staticmethod
     def get_low_latency_rdma_size_hint(
-        num_max_dispatch_tokens_per_rank: int, hidden: int, num_ranks: int, num_experts: int
+        num_max_dispatch_tokens_per_rank: int, hidden: int, num_ranks: int, num_experts: int, quant_group_size: int = 0
     ) -> int:
         """
         Get a minimum size requirement for the RDMA buffer. The size calculation will be done with BF16.
@@ -222,12 +222,13 @@ class Buffer:
             hidden: the hidden dimension of each token.
             num_ranks: the number of EP group ranks.
             num_experts: the number of all experts.
+            quant_group_size: the group size if use quant.
 
         Returns:
             size: the RDMA buffer size recommended.
         """
         return deep_ep_cpp.get_low_latency_rdma_size_hint(
-            num_max_dispatch_tokens_per_rank, hidden, num_ranks, num_experts
+            num_max_dispatch_tokens_per_rank, hidden, num_ranks, num_experts, quant_group_size
         )
 
     def get_comm_stream(self) -> torch.Stream:
@@ -823,7 +824,7 @@ class Buffer:
         return combined_x, combined_topk_weights, EventOverlap(event)
 
     def clean_low_latency_buffer(
-        self, num_max_dispatch_tokens_per_rank: int, hidden: int, num_experts: int
+        self, num_max_dispatch_tokens_per_rank: int, hidden: int, num_experts: int, quant_group_size: int = 0
     ) -> None:
         """
         As low-latency kernels require part of the buffer to be zero-initialized, so it is vital to clean the buffer
@@ -835,8 +836,9 @@ class Buffer:
             num_max_dispatch_tokens_per_rank: the maximum number of tokens to dispatch, all the ranks must hold the same value.
             hidden: the hidden dimension of each token.
             num_experts: the number of all experts.
+            quant_group_size: the group size if use quant.
         """
-        self.runtime.clean_low_latency_buffer(num_max_dispatch_tokens_per_rank, hidden, num_experts)
+        self.runtime.clean_low_latency_buffer(num_max_dispatch_tokens_per_rank, hidden, num_experts, quant_group_size)
 
     # noinspection PyTypeChecker
     def low_latency_dispatch(self, x: torch.Tensor, topk_idx: torch.Tensor,

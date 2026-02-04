@@ -135,8 +135,8 @@ struct LowLatencyLayout {
     }
 
     LowLatencyLayout(void *rdma_buffer, int num_max_dispatch_tokens_per_rank, int hidden,
-                     int num_ranks, int num_experts) {
-        const int num_scales = hidden / QUANTIZATION_GROUPSIZE;
+                     int num_ranks, int num_experts, int quant_group_size=0) {
+        const int num_scales = quant_group_size == 0 ? 4 : hidden / QUANTIZATION_GROUPSIZE;   // 应该是1，但是代码中为了满足int4对齐
 
         // Dispatch and combine layout:
         //  - 2 symmetric odd/even send buffer
@@ -205,9 +205,9 @@ struct LowLatencyLayout {
 };
 
 inline size_t get_low_latency_rdma_size_hint(int num_max_dispatch_tokens_per_rank, int hidden,
-                                             int num_ranks, int num_experts) {
+                                             int num_ranks, int num_experts, int quant_group_size=0) {
     auto num_bytes =
-        LowLatencyLayout(nullptr, num_max_dispatch_tokens_per_rank, hidden, num_ranks, num_experts)
+        LowLatencyLayout(nullptr, num_max_dispatch_tokens_per_rank, hidden, num_ranks, num_experts, quant_group_size)
             .total_bytes;
     return ((num_bytes + NUM_BUFFER_ALIGNMENT_BYTES) / NUM_BUFFER_ALIGNMENT_BYTES) *
            NUM_BUFFER_ALIGNMENT_BYTES;

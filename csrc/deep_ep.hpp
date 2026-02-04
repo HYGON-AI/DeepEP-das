@@ -172,7 +172,7 @@ public:
         std::optional<EventHandle> &previous_event, bool async, bool allocate_on_comm_stream);
 
     void clean_low_latency_buffer(int num_max_dispatch_tokens_per_rank, int hidden,
-                                  int num_experts);
+                                  int num_experts, int quant_group_size=0);
 
     std::tuple<torch::Tensor, std::optional<torch::Tensor>, torch::Tensor, torch::Tensor, torch::Tensor, std::optional<EventHandle>, std::optional<std::function<void()>>>
     low_latency_dispatch(const torch::Tensor& x, const torch::Tensor& topk_idx,
