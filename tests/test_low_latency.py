@@ -4,7 +4,7 @@ import torch.distributed as dist
 from functools import partial
 
 import deep_ep
-from utils import init_dist, bench, bench_kineto, calc_diff, hash_tensor, per_token_cast_back
+from utils import init_dist, bench, bench_kineto, calc_diff, hash_tensor, per_token_cast_pg_back
 
 
 def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
@@ -44,7 +44,7 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
                 # print('run {}/{}, dispatch_use_fp8={}'.format(i + 1, num_times, dispatch_use_fp8))
                 # return
             packed_recv_x = (packed_recv_x[0], packed_recv_x[1].contiguous()) if dispatch_use_fp8 else packed_recv_x
-            simulated_gemm_x = per_token_cast_back(packed_recv_x[0].view(-1, hidden), packed_recv_x[1].view(-1, hidden // 128)).view(packed_recv_x[0].shape) \
+            simulated_gemm_x = per_token_cast_pg_back(packed_recv_x[0].view(-1, hidden), packed_recv_x[1].view(-1, hidden // 128)).view(packed_recv_x[0].shape) \
                 if dispatch_use_fp8 else packed_recv_x.clone()
             # print(f"rank{rank}: packed_recv_x[0]\n{packed_recv_x[0].cpu()}\n")
             # print(f"rank{rank}: packed_recv_x[1]\n{packed_recv_x[1].cpu()}\n")
@@ -53,7 +53,7 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
             dist.all_gather_into_tensor(all_topk_idx, topk_idx, group=group)
             for i in range(num_local_experts if do_check else 0):
                 expert_id = rank * num_local_experts + i
-                recv_x = per_token_cast_back(packed_recv_x[0][i], packed_recv_x[1][i]) if dispatch_use_fp8 else packed_recv_x[i]
+                recv_x = per_token_cast_pg_back(packed_recv_x[0][i], packed_recv_x[1][i]) if dispatch_use_fp8 else packed_recv_x[i]
                 recv_count, recv_src_info, recv_layout_range = packed_recv_count[i], handle[0][i], handle[1][i]
 
                 # Check expert indices

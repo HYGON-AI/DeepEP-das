@@ -72,16 +72,16 @@ def per_token_cast_pg_back(x: torch.Tensor, x_scales: torch.Tensor):
     x_scales = x_scales.view(x.size(0), -1, 1)
     return (x_fp32_padded * x_scales).view(x_padded.shape).to(torch.bfloat16)[:,:n].contiguous()
 
-def per_token_cast_pc_back(x_int8: torch.Tensor, x_scales: torch.Tensor):
-    if x_int8.numel() == 0:
-        return x_int8.to(torch.bfloat16)
+def per_token_cast_pc_back(x: torch.Tensor, x_scales: torch.Tensor):
+    if x.numel() == 0:
+        return x.to(torch.bfloat16)
 
-    assert x_int8.dim() == 2
-    m, n = x_int8.shape
+    assert x.dim() == 2
+    m, n = x.shape
     aligned_n = align_up(n, 128)
 
-    x_int8_padded = torch.nn.functional.pad(x_int8, (0, aligned_n - n), mode='constant', value=0)
-    x_fp32_padded = x_int8_padded.to(torch.float32).view(m, -1, 1)
+    x_padded = torch.nn.functional.pad(x, (0, aligned_n - n), mode='constant', value=0)
+    x_fp32_padded = x_padded.to(torch.float32).view(m, -1, 1)
     x_scales = x_scales.view(m, -1, 1).to(torch.float32)
     x_deq = (x_fp32_padded * x_scales).view(m, aligned_n)
     return x_deq[:, :n].to(torch.bfloat16).contiguous()

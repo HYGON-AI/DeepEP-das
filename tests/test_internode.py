@@ -6,7 +6,7 @@ import torch.distributed as dist
 
 # noinspection PyUnresolvedReferences
 import deep_ep
-from utils import init_dist, bench, bench_kineto, calc_diff, create_grouped_scores, inplace_unique, per_token_cast_to_fp8, per_token_cast_back, hash_tensor
+from utils import init_dist, bench, bench_kineto, calc_diff, create_grouped_scores, inplace_unique, per_token_cast_to_fp8, per_token_cast_pg_back, hash_tensor
 
 # Test compatibility with low latency functions
 import test_low_latency
@@ -127,7 +127,7 @@ def test_main(args: argparse.Namespace, num_sms: int,
                         hash_value += hash_tensor(recv_x[0])
                         hash_value += hash_tensor(recv_x[1])
 
-                    recv_x = per_token_cast_back(*recv_x) if isinstance(recv_x, tuple) else recv_x
+                    recv_x = per_token_cast_pg_back(*recv_x) if isinstance(recv_x, tuple) else recv_x
 
                     # Checks
                     recv_gbl_rank_prefix_sum = handle[-4]
@@ -153,7 +153,7 @@ def test_main(args: argparse.Namespace, num_sms: int,
                             dispatch_args.update({'previous_event': buffer.capture()})
                         recv_x, _, _, _, _, event = buffer.dispatch(**dispatch_args)
                         event.current_stream_wait() if async_mode else ()
-                        recv_x = per_token_cast_back(*recv_x) if isinstance(recv_x, tuple) else recv_x
+                        recv_x = per_token_cast_pg_back(*recv_x) if isinstance(recv_x, tuple) else recv_x
                         if not is_rand:
                             check_data(recv_x, recv_gbl_rank_prefix_sum)
 

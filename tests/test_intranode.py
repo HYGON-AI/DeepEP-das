@@ -5,7 +5,7 @@ import torch.distributed as dist
 
 # noinspection PyUnresolvedReferences
 import deep_ep
-from utils import init_dist, bench, calc_diff, inplace_unique, per_token_cast_to_fp8, per_token_cast_back
+from utils import init_dist, bench, calc_diff, inplace_unique, per_token_cast_to_fp8, per_token_cast_pg_back
 
 # Test compatibility with low latency functions
 import test_low_latency
@@ -99,7 +99,7 @@ def test_main(args: argparse.Namespace, num_sms: int, local_rank: int, num_ranks
                         dispatch_args.update({'previous_event': buffer.capture()})
                     recv_x, recv_topk_idx, recv_topk_weights, recv_num_tokens_per_expert_list, handle, event = buffer.dispatch(**dispatch_args)
                     event.current_stream_wait() if async_mode else ()
-                    recv_x = per_token_cast_back(*recv_x) if isinstance(recv_x, tuple) else recv_x
+                    recv_x = per_token_cast_pg_back(*recv_x) if isinstance(recv_x, tuple) else recv_x
 
                     # Checks
                     rank_prefix_matrix = handle[0]
@@ -126,7 +126,7 @@ def test_main(args: argparse.Namespace, num_sms: int, local_rank: int, num_ranks
                         dispatch_args.update({'num_worst_tokens': num_worst_tokens})
                         recv_worst_x, recv_worst_topk_idx, recv_worst_topk_weights, empty_list, _, event = buffer.dispatch(**dispatch_args)
                         event.current_stream_wait() if async_mode else ()
-                        recv_worst_x = per_token_cast_back(*recv_worst_x) if isinstance(recv_worst_x, tuple) else recv_worst_x
+                        recv_worst_x = per_token_cast_pg_back(*recv_worst_x) if isinstance(recv_worst_x, tuple) else recv_worst_x
                         assert len(empty_list) == 0
                         assert num_worst_tokens == recv_worst_x.size(0)
                         assert num_worst_tokens == recv_worst_topk_idx.size(0)
@@ -143,7 +143,7 @@ def test_main(args: argparse.Namespace, num_sms: int, local_rank: int, num_ranks
                             dispatch_args.update({'previous_event': buffer.capture()})
                         recv_x, _, _, _, _, event = buffer.dispatch(**dispatch_args)
                         event.current_stream_wait() if async_mode else ()
-                        recv_x = per_token_cast_back(*recv_x) if isinstance(recv_x, tuple) else recv_x
+                        recv_x = per_token_cast_pg_back(*recv_x) if isinstance(recv_x, tuple) else recv_x
                         if current_x is not x_pure_rand:
                             check_data(recv_x, rank_prefix_matrix)
 
