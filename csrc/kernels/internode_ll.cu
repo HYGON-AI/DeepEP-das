@@ -9,6 +9,7 @@
 #include "hip/hip_runtime.h"
 
 #include "shmem_wrapper.cuh"
+#include "internode_ll_logfmt.cuh"
 
 namespace deep_ep {
 
@@ -612,7 +613,7 @@ void dispatch(void* packed_recv_x, void* packed_recv_x_scales,
 #undef DISPATCH_LAUNCH_CASE
 }
 
-template <int kHidden, int kNumMaxTopk, int kMaxNumWarps=16>
+template <bool kUseLogFMT, int kHidden, int kNumMaxTopk, int kMaxNumWarps=16>
 __global__ __launch_bounds__(16 * kWarpSize, 1) void
 combine(void* combined_x,
         void* rdma_recv_x, int64_t* rdma_recv_flag, void* rdma_send_x,
@@ -643,7 +644,24 @@ combine(void* combined_x,
 
     // Message package
     EP_STATIC_ASSERT(kHidden % QUANTIZATION_GROUPSIZE == 0, "Invalid hidden");
-    constexpr size_t num_bytes_per_slot = kHidden * sizeof(hip_bfloat16);
+
+    /////////////// LogFMT使用 ///////////////
+    constexpr int bSupportLogFMT = kUseLogFMT && hidden_bf16_int4 % (kWarpSize * 2) == 0;
+    constexpr int kNumSendUnrolls = bSupportLogFMT ? 2 : 1;
+    constexpr int kNumRecvUnrolls = bSupportLogFMT ? 2 : 1;
+    constexpr int kNumMsgInt4ElemPerWarp = kWarpSize * kNumSendUnrolls; // 每个warp发送的int4元素数据量，即每个warp发送 kNumMsgInt4ElemPerWarp*sizeof(int4)/sizeof(bfloat16)
+    EP_STATIC_ASSERT(hidden_bf16_int4 % (kNumSendUnrolls * kWarpSize) == 0, "Invalid hidden");
+    EP_STATIC_ASSERT(kNumSendUnrolls >= kNumRecvUnrolls, "Invalid unroll factors");
+
+    constexpr int kNumDivisions = kHidden / QUANTIZATION_GROUPSIZE;
+    constexpr int kNumMetaBytes = kNumDivisions * sizeof(__hip_bfloat162);  // 用于记录数据的最大最小值
+    constexpr int kNumSendLogFMTBytes = kNumMsgInt4ElemPerWarp * sizeof(int4);
+    constexpr int kNumStages = 1;  // 使用kNumStages>1，则需要的LDS大于64KB
+    constexpr int kLogFMTShmemSize = kMaxNumWarps * (kNumStages * kNumSendLogFMTBytes + kNumMetaBytes);
+    __shared__ uint8_t smem_buffer[kLogFMTShmemSize];
+    /////////////////////////////////////////////
+
+    constexpr size_t num_bytes_per_slot = kHidden * sizeof(hip_bfloat16) + kNumMetaBytes;
     EP_STATIC_ASSERT(num_bytes_per_slot % sizeof(int4) == 0, "Invalid vectorization");
 
     // 初始化用于细粒度warp间同步的计数器数组
@@ -683,6 +701,12 @@ combine(void* combined_x,
         const auto local_src_info = src_info + local_expert_idx * num_ranks * num_max_dispatch_tokens_per_rank;
         const auto rdma_send_x_vec = reinterpret_cast<uint8_t*>(rdma_send_x) +
                                      local_expert_idx * num_ranks * num_max_dispatch_tokens_per_rank * num_bytes_per_slot;
+        // 用于logfmt的LDS
+        auto smem_ptr = smem_buffer + warp_id * (kNumStages * kNumSendLogFMTBytes + kNumMetaBytes);
+        // 存储logfmt的起始地址，并根据stage_idx进行索引块
+        auto logfmt_buffers = PatternVisitor([=](const int& i) { return reinterpret_cast<int4*>(smem_ptr + i * kNumSendLogFMTBytes); });
+        // 存储logfmt的最大最小值
+        auto meta_buffers = bSupportLogFMT ? reinterpret_cast<__hip_bfloat162*>(smem_ptr + kNumStages * kNumSendLogFMTBytes) : nullptr;
 
         // Unpack layout
         int offset, num_tokens_to_send;
@@ -699,20 +723,78 @@ combine(void* combined_x,
             const auto buf_ptr = reinterpret_cast<int64_t>(rdma_send_x_vec_row);
             const auto dst_ptr = reinterpret_cast<uint64_t>(rdma_recv_x) + (global_expert_idx * num_max_dispatch_tokens_per_rank + src_idx) * num_bytes_per_slot;
             
-            uint64_t p2p_ptr = internode::shmem_get_p2p_ptr((void*)dst_ptr, rank, dst_rank);
-            if (p2p_ptr == 0) {  // RDMA
-                const auto buf_int4_ptr = reinterpret_cast<int4*>(buf_ptr);
-                if (not zero_copy)
-                    UNROLLED_WARP_COPY_LL(7, lane_id, hidden_bf16_int4, buf_int4_ptr, x_int4, ld_nc_global, st_na_global);
+            // 采用logfmt或者直接拷贝
+            uint64_t dst_p2p_ptr = internode::shmem_get_p2p_ptr((void*)dst_ptr, rank, dst_rank);
+            int num_send_bytes = hidden * sizeof(hip_bfloat16);
 
+            if (not zero_copy or dst_p2p_ptr != 0) {
+                // Read from `cpy_src_int4_ptr` and copy into `cpy_dst_int4_ptr`
+                const auto cpy_src_int4_ptr = zero_copy ? reinterpret_cast<int4*>(buf_ptr) : x_int4;
+                const auto cpy_dst_int4_ptr = dst_p2p_ptr == 0 ? reinterpret_cast<int4*>(buf_ptr): reinterpret_cast<int4*>(dst_p2p_ptr);
+
+                // 设置数据的真实偏移量
+                int logfmt_offset_bytes = kNumMetaBytes;
+                // 进入循环，逐步拷贝数据
+                constexpr int encode_num_warps = hidden_bf16_int4 / kNumMsgInt4ElemPerWarp;
+                for (int iter_idx = 0; iter_idx < encode_num_warps; ++iter_idx) {
+                    int num_logfmt_bytes = kNumMsgInt4ElemPerWarp * sizeof(int4);
+
+                    // 原始数据的warp级编译
+                    int warp_offset = iter_idx * kNumMsgInt4ElemPerWarp;
+
+                    if constexpr(bSupportLogFMT) {
+                        // 采用 寄存器->lds->global 的流水线方式, 量化后拷贝到buf_ptr中
+                        const int& stage_idx = iter_idx % kNumStages;
+
+                        // thread偏移
+                        int thread_offset = warp_offset + lane_id * kNumSendUnrolls;
+                        constexpr int kNumInt4PerDivision = 128 / kNumElemsPerInt4; // = 128/(sizeof(int4) / sizeof(hip_bfloat16)) = 128/(16/2)=16
+                        num_logfmt_bytes = logfmt_encode<kNumSendUnrolls>(
+                            cpy_src_int4_ptr + warp_offset, // 等同于 x_int4
+                            logfmt_buffers[stage_idx],
+                            // NOTES: only the leader lane will write the result
+                            (thread_offset % kNumInt4PerDivision == 0) ? meta_buffers + thread_offset / kNumInt4PerDivision : nullptr,
+                            lane_id);
+
+                        // 将量化后的数据写入
+                        using vec_type = uint32_t;
+                        UNROLLED_WARP_COPY_LL(2, lane_id, num_logfmt_bytes / sizeof(vec_type),
+                            reinterpret_cast<vec_type *>(reinterpret_cast<uint8_t*>(cpy_dst_int4_ptr) + logfmt_offset_bytes),
+                            reinterpret_cast<vec_type *>(logfmt_buffers[stage_idx]),
+                            ld_nc_global, st_na_global);
+
+                        // 起始地址偏移
+                        logfmt_offset_bytes += num_logfmt_bytes;
+                    } else {
+                        // 非量化数据的传输
+                        UNROLLED_WARP_COPY_LL(2, lane_id, kNumMsgInt4ElemPerWarp,
+                            reinterpret_cast<int4*>(cpy_dst_int4_ptr + warp_offset),
+                            reinterpret_cast<const int4*>(cpy_src_int4_ptr + warp_offset),
+                            ld_nc_global, st_na_global);
+                    }
+                    syncwarp();
+                }
+
+                // Store metadata (min/max values) for LogFMT
+                if constexpr (bSupportLogFMT) {
+                    // 最终设置节点间传输的字节数
+                    num_send_bytes = logfmt_offset_bytes;
+
+                    using vec_type = uint32_t;
+                    auto meta_buffers_ptr = reinterpret_cast<vec_type*>(meta_buffers);
+                    auto cpy_dst_uint32_ptr = reinterpret_cast<vec_type*>(cpy_dst_int4_ptr);
+
+                    for(int j = lane_id; j < kNumMetaBytes / sizeof(vec_type); j+=kWarpSize) {
+                        *(cpy_dst_uint32_ptr + j) = meta_buffers_ptr[j];
+                    }
+                }
+                syncwarp();
+            }
+
+            if (dst_p2p_ptr == 0) {
                 internode_ll_putmem_nbi((void*)dst_ptr, (void*)buf_ptr,
-                    num_ranks, dst_rank, local_expert_idx,
-                    hidden * sizeof(hip_bfloat16));
-            } else { //  本地 GPU 和 同一计算节点的 其他 GPU 地址
-                // NOTES: only 2 load iterations for 7K hidden with 8 unrolls
-                const auto* src_int4_ptr = reinterpret_cast<const int4*>(x_int4);
-                const auto* dst_int4_ptr = reinterpret_cast<int4*>(p2p_ptr);
-                UNROLLED_WARP_COPY_LL(7, lane_id, hidden_bf16_int4, dst_int4_ptr, src_int4_ptr, ld_nc_global, st_na_global);
+                                        num_ranks, dst_rank, local_expert_idx,
+                                        num_send_bytes);
             }
         }
 
@@ -773,40 +855,136 @@ LOW_LATENCY_COMBINE_RECV:
     // Reduce tokens with FP8 cast
     // EP_DEVICE_ASSERT(num_topk <= kWarpSize and hidden_bf16_int4 <= num_threads);
     EP_STATIC_ASSERT(kHidden % (kWarpSize * kNumElemsPerInt4) == 0, "Invalid vectorization");
-    if (thread_id < hidden_bf16_int4) {
-        for (int token_idx = sm_id; token_idx < num_combined_tokens; token_idx += num_sms) {
-            // Read top-k indices and weights
-            int reg_topk_idx[kNumMaxTopk];
-            float reg_topk_weights[kNumMaxTopk];
-            #pragma unroll
-            for (int i = 0; i < num_topk; ++ i) {
-                reg_topk_idx[i] = static_cast<int>(__ldg(topk_idx + token_idx * num_topk + i));
-                reg_topk_weights[i] = __ldg(topk_weights + token_idx * num_topk + i);
-            }
 
-            float combined_values[kNumElemsPerInt4] = {0.0f};
-            #pragma unroll
-            for (int i = 0; i < num_topk; ++ i) if (reg_topk_idx[i] >= 0) {
-                // Read from sources
-                auto rdma_buffer_type = reinterpret_cast<const int*>(reinterpret_cast<uint8_t*>(rdma_recv_x) +
-                    (reg_topk_idx[i] * num_max_dispatch_tokens_per_rank + token_idx) * num_bytes_per_slot);
-                auto rdma_buffer_row = reinterpret_cast<const uint8_t*>(rdma_buffer_type);
+    // 计算需要多少个warp
+    constexpr int num_decode_warps = hidden_bf16_int4 / (kNumRecvUnrolls * kWarpSize);
+    // 限制thread_id
+    if (warp_id >= num_decode_warps) {
+        return;
+    }
 
-                // Reduce
-                auto x_vec = ld_nc_global(reinterpret_cast<const int4*>(rdma_buffer_row) + thread_id);
-                const auto x_bf16 = reinterpret_cast<hip_bfloat16*>(&x_vec);
+    // 每128个数据记录一个max/min值，即该数为总的max/min值数量
+    constexpr int kNumDivisionBytes = kNumDivisions * sizeof(float);
+    // 每个warp内总的BF16值的数量
+    constexpr int kNumBF16PerWarpBytes = kWarpSize * kNumRecvUnrolls * sizeof(int4);
+    constexpr int kNumLogFMTPerWarpBytes = kNumBF16PerWarpBytes * 10 / 16;
+
+    // 用于记录 max/min 值的 log 值
+    auto log_amax_buffers =
+        PatternVisitor([=](const int& i) { return reinterpret_cast<float*>(smem_buffer + i * kNumDivisionBytes); });
+    auto log_amin_buffers = PatternVisitor([=](const int& i) {
+      return reinterpret_cast<float*>(smem_buffer + kNumStages * kNumDivisionBytes + i * kNumDivisionBytes);
+    });
+    auto cast_info_buffers = PatternVisitor([=](const int& i) {
+      return reinterpret_cast<int*>(smem_buffer + kNumStages * kNumDivisionBytes * 2 + i * kNumDivisionBytes);
+    });
+
+    // 初始化 topk_idx 和 topk_weights
+    int topk_idx_by_lane = -1;
+    float topk_weights_by_lane = -1;
+    int stage_idx = 0;
+    for (int token_idx = sm_id; token_idx < num_combined_tokens; token_idx += num_sms) {
+        if (lane_id < num_topk) {
+            topk_idx_by_lane = static_cast<int>(__ldg(topk_idx + token_idx * num_topk + lane_id));
+            topk_weights_by_lane = __ldg(topk_weights + token_idx * num_topk + lane_id);
+        }
+
+        float combined_values[kNumElemsPerInt4 * kNumRecvUnrolls] = {0.0f};
+        #pragma unroll
+        for (int i = 0; i < num_topk; ++ i) {
+            int topk_idx_reg = shfl_sync(topk_idx_by_lane, i);
+            if (topk_idx_reg < 0)
+                continue;
+            const auto& topk_weight_reg = shfl_sync(topk_weights_by_lane, i);
+
+            // Read from sources
+            auto rdma_buffer_type = reinterpret_cast<const uint8_t*>(reinterpret_cast<uint8_t*>(rdma_recv_x) +
+                (topk_idx_reg * num_max_dispatch_tokens_per_rank + token_idx) * num_bytes_per_slot);
+
+            if constexpr(bSupportLogFMT) {
+                // 接收到的数据位置
+                const uint8_t* data_buffer = rdma_buffer_type + kNumMetaBytes;
+
+                // 读取max/min数据
+                if(warp_id == 0) {
+                    // 因为每个warp能处理数据量为 kWarpSize*sizeof(int4)/sizeof(bfloat16) * kNumSendUnrolls
+                    // 即不考虑kNumSendUnrolls，一共 kWarpSize*sizeof(int4)/sizeof(bfloat16)/128 组， 代入参数 = kWarpSize / 16 个warp，nv上为2，dcu上为4
+                    logfmt_check_amaxmin<kNumDivisions / (kWarpSize / 16), kNumSendUnrolls, kNumRecvUnrolls>(
+                        /*meta_buffer*/rdma_buffer_type,
+                        reinterpret_cast<int4*>(log_amax_buffers[stage_idx]),
+                        reinterpret_cast<int4*>(log_amin_buffers[stage_idx]),
+                        cast_info_buffers[stage_idx],
+                        lane_id);
+                }
+
+                __syncthreads();
+
+                // 获取cast_info_buffers
+                const auto& info = cast_info_buffers[stage_idx][warp_id];
+                bool enable_cast = info & 1;
+                int num_casted_prefix = info >> 1; // 可用的
+
+                // 计算偏移（与TMA版本逻辑一致）
+                int warp_offset = kNumLogFMTPerWarpBytes * num_casted_prefix +
+                                  kNumBF16PerWarpBytes * (warp_id - num_casted_prefix);
+                int lane_offset = (enable_cast ? kNumLogFMTPerWarpBytes : kNumBF16PerWarpBytes) / kWarpSize * lane_id;
+
+                // 使用临时缓冲区进行归约
+                const uint8_t* thread_data_ptr = data_buffer + warp_offset + lane_offset;
+
+                /**
+                一共有kNumDivisions个max/min数据对，读取时每warp默认处理256bit的max/min，所以logfmt_check_amaxmin的kNumLanes设置为 kNumDivisions/2
+                保存数据时每个log_amax_buffers为float2数据类型，保存总的warpkNumDivisions / 2
+                实际保存数据时，每个warp保存的实际数据个数为 kWarpSize*kNumRecvUnrolls*sizeof(int4)/sizeof(hip_bfloat16)
+                实际每个warp读取的max/min的 warp_idx=kWarpSize*kNumRecvUnrolls*sizeof(int4)/sizeof(hip_bfloat16) / 128 = kNumRecvUnrolls * 2
+                具体的lane_id处理的数据量为 warp_idx / kWarpSize
+                */
+                int log_amaxmin_per_warp = kNumRecvUnrolls * kWarpSize * sizeof(int4) / sizeof(hip_bfloat16) / QUANTIZATION_GROUPSIZE;
+                int division_idx = warp_id * log_amaxmin_per_warp + lane_id * log_amaxmin_per_warp / kWarpSize;
+
+                // 反量化
+                decode_and_accumulate<kNumRecvUnrolls>(
+                    reinterpret_cast<const uint32_t*>(thread_data_ptr),  // 直接使用全局内存地址
+                    combined_values,
+                    log_amax_buffers[stage_idx][division_idx],
+                    log_amin_buffers[stage_idx][division_idx],
+                    enable_cast,
+                    topk_weight_reg);
+            } else {
+                // 接收到的数据位置
+                const uint8_t* data_buffer = rdma_buffer_type;
+
+                // 计算偏移
+                int warp_offset = kNumBF16PerWarpBytes * warp_id;
+                int lane_offset = kNumBF16PerWarpBytes / kWarpSize * lane_id;
+                // 使用临时缓冲区进行归约
+                const uint8_t* thread_data_ptr = data_buffer + warp_offset + lane_offset;
+
                 #pragma unroll
-                for (int j = 0; j < kNumElemsPerInt4; ++ j)
-                    combined_values[j] += static_cast<float>(x_bf16[j]) * reg_topk_weights[i];
-            }
+                for (int j = 0; j < kNumRecvUnrolls; ++j) {
+                    auto tmp_rdma_value = ld_nc_global(reinterpret_cast<const int4*>(thread_data_ptr) + j);
+                    const auto x_bf16 = reinterpret_cast<const hip_bfloat16*>(&tmp_rdma_value);
 
-            // Write results
-            int4& combined_int4 = *reinterpret_cast<int4*>(combined_values);
-            auto combined_bf16 = reinterpret_cast<hip_bfloat16*>(&combined_values);
-            #pragma unroll
-            for (int j = 0; j < kNumElemsPerInt4; ++ j)
-                combined_bf16[j] = static_cast<hip_bfloat16>(combined_values[j]);
-            (reinterpret_cast<int4*>(combined_x) + token_idx * hidden_bf16_int4)[thread_id] = combined_int4;
+                    #pragma unroll
+                    for (int k = 0; k < kNumElemsPerInt4; ++k) {
+                        int combined_idx = j * kNumElemsPerInt4 + k;
+                        combined_values[combined_idx] += static_cast<float>(x_bf16[k]) * topk_weight_reg;
+                    }
+                }
+            }
+        }
+
+        // Write results，kNumRecvUnrolls==2时则写256bit的数
+        int4 combined_int4[kNumRecvUnrolls];
+        auto combined_bf16 = reinterpret_cast<hip_bfloat16 *>(&combined_int4[0]);
+        #pragma unroll
+        for (int j = 0; j < kNumElemsPerInt4 * kNumRecvUnrolls; ++ j) {
+            combined_bf16[j] = static_cast<hip_bfloat16>(combined_values[j]);
+        }
+
+        for(int j = 0; j < kNumRecvUnrolls; ++ j) {
+            (reinterpret_cast<int4*>(combined_x) + token_idx * hidden_bf16_int4 +
+            warp_id * kWarpSize * kNumRecvUnrolls)[lane_id * kNumRecvUnrolls + j] = combined_int4[j];
         }
     }
 }
@@ -820,6 +998,7 @@ void combine(void* combined_x,
              int64_t* next_clean, int num_next_clean_int,
              int num_combined_tokens, int hidden, int num_max_dispatch_tokens_per_rank,
              int num_topk, int num_experts, int rank, int num_ranks,
+             bool use_logfmt,
              void* workspace, int num_device_sms, hipStream_t stream,
              int phases, bool zero_copy) {
     constexpr int kMaxNumWarps = 16;
@@ -840,7 +1019,9 @@ void combine(void* combined_x,
 
 #define COMBINE_LAUNCH_CASE(hidden)                                            \
   {                                                                            \
-    auto combine_func = combine<hidden, kNumMaxTopk, kMaxNumWarps>;            \
+    auto combine_func = use_logfmt ?                                           \
+         combine<true, hidden, kNumMaxTopk, kMaxNumWarps> :                    \
+         combine<false, hidden, kNumMaxTopk, kMaxNumWarps>;                    \
     LAUNCH_KERNEL_NON_COOPERATIVE(&cfg, combine_func,                          \
         combined_x, rdma_recv_x, rdma_recv_flag, rdma_send_x,                  \
         x, topk_idx, topk_weights, src_info, layout_range,                     \

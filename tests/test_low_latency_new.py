@@ -42,6 +42,7 @@ def test_main(num_tokens: int,
               num_ranks: int,
               group: dist.ProcessGroup,
               buffer: deep_ep.Buffer,
+              use_logfmt: bool = False,
               seed: int = 0):
     torch.manual_seed(seed + rank)
     random.seed(seed + rank)
@@ -56,10 +57,12 @@ def test_main(num_tokens: int,
     x = torch.ones((num_tokens, hidden), dtype=torch.bfloat16, device='cuda') * (rank - rank_offset)
     x[:, -128:] = torch.arange(num_tokens, device='cuda').to(torch.bfloat16).view(-1, 1)
     x_list = [x]
-    # # NOTES: the last one is for performance testing
-    # # Most of the values in the perf case is lower than the threshold, casting most channels
-    # x_rand = torch.randn((num_tokens, hidden), dtype=torch.bfloat16, device='cuda') * 0.1
-    # x_list = [x_rand]
+    for _ in range(4 if use_logfmt else 0):
+        # NOTES: make more LogFMT casts and also with some BF16
+        x_list.append(torch.randn((num_tokens, hidden), dtype=torch.bfloat16, device='cuda') * 0.5 * random.random())
+    # NOTES: the last one is for performance testing
+    # Most of the values in the perf case is lower than the threshold, casting most channels
+    x_list.append(torch.randn((num_tokens, hidden), dtype=torch.bfloat16, device='cuda') * 0.1)
 
     scores = torch.randn((num_tokens, num_experts), dtype=torch.float32, device='cuda').abs() + 1
     topk_idx = torch.topk(scores, num_topk, dim=-1, largest=True, sorted=True)[1]
@@ -79,7 +82,7 @@ def test_main(num_tokens: int,
     # Check dispatch correctness
     do_check = True
     hash_value, num_times = 0, 0
-    for current_x in x_list:
+    for x_i, current_x in enumerate(x_list):
         for return_recv_hook in (False, True):
             for quant_type in (0, 1, 2, 3, ): # 0: 不量化, 1: int8, 2: FP8_E4M3, 3: FP8_UE8M0 (仅支持round_scale=True), 4: FP8_E5M2
                 dispatch_use_quant = quant_type > 0
@@ -152,7 +155,7 @@ def test_main(num_tokens: int,
                                 hash_value ^= hash_tensor(packed_recv_x[i, :num_valid_tokens])
 
                         # Check combine correctness
-                        for zero_copy in (False, True):
+                        for zero_copy in (False, ) if use_logfmt else (False, True, ):
                             if zero_copy:
                                 buffer.get_next_low_latency_combine_buffer(handle)[:, :, :] = simulated_gemm_x
                             out = torch.empty((num_tokens, hidden), dtype=torch.bfloat16, device='cuda')
@@ -160,6 +163,7 @@ def test_main(num_tokens: int,
                                                                                  topk_idx,
                                                                                  topk_weights,
                                                                                  handle,
+                                                                                 use_logfmt=use_logfmt,
                                                                                  async_finish=not return_recv_hook,
                                                                                  zero_copy=zero_copy,
                                                                                  return_recv_hook=return_recv_hook,
@@ -171,6 +175,10 @@ def test_main(num_tokens: int,
                                 # if not fp8_round_scale:
                                 assert diff < (9e-4 if dispatch_use_quant else 1e-5), f'Error: diff={diff}, dispatch_use_quant={dispatch_use_quant}, zero_copy={zero_copy}'
                                 hash_value ^= hash_tensor(combined_x)
+
+                        if rank == 0:
+                            print(f"data:{x_i}, return_recv_hook:{return_recv_hook}, quant_type:{quant_type}, ", 
+                                  f"fp8_round_scale:{fp8_round_scale}, quant_group_size:{quant_group_size} pass")
 
     # noinspection PyShadowingNames
     def large_gemm_with_hook(hook):
@@ -190,6 +198,7 @@ def test_main(num_tokens: int,
                                                              topk_idx,
                                                              topk_weights,
                                                              handle,
+                                                             use_logfmt=use_logfmt,
                                                              return_recv_hook=return_recv_hook)
         large_gemm_with_hook(hook) if return_recv_hook else None
 
@@ -251,6 +260,7 @@ def test_loop(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
               num_ranks,
               group,
               buffer,
+              use_logfmt=args.use_logfmt,
               seed=1)
 
     do_pressure_test = args.pressure_test
@@ -265,6 +275,7 @@ def test_loop(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
                              num_ranks,
                              group,
                              buffer,
+                             use_logfmt=args.use_logfmt,
                              seed=seed)
         for _ in range(20):
             assert test_main(num_tokens,
@@ -275,6 +286,7 @@ def test_loop(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
                              num_ranks,
                              group,
                              buffer,
+                             use_logfmt=args.use_logfmt,
                              seed=seed) == ref_hash, f'Error: seed={seed}'
 
     # Destroy the buffer runtime and communication group

@@ -72,9 +72,9 @@ __device__ __forceinline__ T shfl_xor(const T val, int laneMask, int width = kWa
     return __shfl_xor(val, laneMask, width);
 }
 
-__device__ __forceinline__ int
-shfl_sync(const int val, int srcLane = 0, int width = kWarpSize,
-          uint64_t shfl_sync_mask = kFullWarpMask) { // Let compiler deduce type
+template <typename T>
+__device__ __forceinline__ T shfl_sync(const T val, int srcLane = 0, int width = kWarpSize,
+                                       uint64_t shfl_sync_mask = kFullWarpMask) { // Let compiler deduce type
     return __shfl(val, srcLane, width);
 }
 
@@ -113,6 +113,15 @@ template <> struct VecInt<8> {
 template <> struct VecInt<16> {
     using native_int4 = int __attribute__((ext_vector_type(4)));
     using vec_t       = native_int4;
+};
+
+template <typename FuncT>
+struct PatternVisitor {
+    FuncT func;
+
+    __device__ __host__ explicit PatternVisitor(FuncT&& func) : func(std::forward<FuncT>(func)) {}
+
+    __device__ __host__ auto operator[](const uint32_t& i) { return func(i); }
 };
 
 __device__ __forceinline__ void trap() {

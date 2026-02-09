@@ -1413,6 +1413,7 @@ Buffer::low_latency_combine(const torch::Tensor& x, const torch::Tensor& topk_id
                             const torch::Tensor& src_info, const torch::Tensor& layout_range,
                             const std::optional<torch::Tensor>& combine_wait_recv_cost_stats,
                             int num_max_dispatch_tokens_per_rank, int num_experts,
+                            bool use_logfmt,
                             bool zero_copy, bool async, bool return_recv_hook,
                             const std::optional<torch::Tensor>& out) {
     EP_HOST_ASSERT(low_latency_mode);
@@ -1482,6 +1483,7 @@ Buffer::low_latency_combine(const torch::Tensor& x, const torch::Tensor& topk_id
                               next_clean_meta.first, next_clean_meta.second,
                               num_combined_tokens, hidden, num_max_dispatch_tokens_per_rank,
                               num_topk, num_experts, rank, num_ranks,
+                              use_logfmt,
                               workspace, num_device_sms, launch_stream,
                               phases, zero_copy);
     };

@@ -185,6 +185,7 @@ public:
                         const torch::Tensor& src_info, const torch::Tensor& layout_range,
                         const std::optional<torch::Tensor>& combine_wait_recv_cost_stats,
                         int num_max_dispatch_tokens_per_rank, int num_experts,
+                        bool use_logfmt,
                         bool zero_copy, bool async, bool return_recv_hook,
                         const std::optional<torch::Tensor>& out = std::nullopt);
 

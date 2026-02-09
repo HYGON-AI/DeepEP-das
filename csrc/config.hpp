@@ -136,7 +136,7 @@ struct LowLatencyLayout {
 
     LowLatencyLayout(void *rdma_buffer, int num_max_dispatch_tokens_per_rank, int hidden,
                      int num_ranks, int num_experts, int quant_group_size=0) {
-        const int num_scales = quant_group_size == 0 ? 4 : hidden / QUANTIZATION_GROUPSIZE;   // 应该是1，但是代码中为了满足int4对齐
+        const int num_scales = hidden / QUANTIZATION_GROUPSIZE;
 
         // Dispatch and combine layout:
         //  - 2 symmetric odd/even send buffer
@@ -148,11 +148,11 @@ struct LowLatencyLayout {
         // transformation
         EP_HOST_ASSERT(num_scales * sizeof(float) <= static_cast<size_t>(hidden));
         size_t num_bytes_per_dispatch_msg =
-            sizeof(int4) +
-            std::max(hidden * sizeof(hip_bfloat16), hidden + num_scales * sizeof(float));
+            sizeof(int4) + std::max(hidden * sizeof(hip_bfloat16), hidden +
+            (quant_group_size == 0 ? 4 : num_scales) * sizeof(float));   // 应该是1，但是代码中为了满足int4对齐
 
         // 与internode_ll::combine 中的 num_bytes_per_slot 相等
-        size_t num_bytes_per_combine_msg = hidden * sizeof(hip_bfloat16);
+        size_t num_bytes_per_combine_msg = hidden * sizeof(hip_bfloat16) + num_scales * sizeof(__hip_bfloat162);
 
         // Send buffer
         size_t dispatch_send_buffer_bytes =
