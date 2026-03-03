@@ -1,3 +1,7 @@
+# 设置默认值
+testmode="internode"
+profiling=""
+
 for para in $*
 do
     if [[ $para == --testmode* ]];then
@@ -14,7 +18,6 @@ TEST_DIR=${CURRENT_DIR}/tests_mpi
 LAUNCH_WITH_BINDING=${TEST_DIR}/launch_with_binding.sh # Please adjust the variables based on the actual NET being used
 DTK_ENV="/opt/dtk/env.sh" # where env.sh of dtk
 TEST_ENV=${TEST_DIR}/test_env.sh
-
 
 #######################################################################################
 # Those variables no need to modify
@@ -40,7 +43,7 @@ mpirun -np ${GPUS}  --hostfile ${HOSTFILE} \
                     --testmode=${testmode} \
                     --profiling=${profiling}
                     "
-                    #> log-$((${GPUS} / 8))nodes-`date +%F-%H%M`.log 2>&1
+		            # > log-${testmode}-$((${GPUS} / 8))nodes-`date +%F-%H%M`.log 2>&1
 wait
 
 
