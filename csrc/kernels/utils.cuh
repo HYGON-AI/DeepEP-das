@@ -240,6 +240,12 @@ template <typename dtype_t> __device__ __forceinline__ dtype_t ld_nc_global(cons
     return *reinterpret_cast<dtype_t *>(&ret);
 }
 
+template <typename dtype_t> __device__ __forceinline__ dtype_t ld_direct_global(const dtype_t *ptr) {
+    using T  = typename VecInt<sizeof(dtype_t)>::vec_t;
+    auto ret = *(reinterpret_cast<const T *>(ptr));
+    return *reinterpret_cast<dtype_t *>(&ret);
+}
+
 ////////////////// used in ibgda
 __device__ __forceinline__ void st_na_relaxed(const uint8_t *ptr, uint8_t val) {
     uint8_t *non_const_ptr = const_cast<uint8_t *>(ptr);
