@@ -1,5 +1,5 @@
 #!/bin/bash
-set -eux
+# set -eux
 
 export amd_comgr_DIR=${ROCM_PATH}/lib64/cmake
 llvm15_path=${ROCM_PATH}/llvm/lib/clang/15.0.0
@@ -58,13 +58,13 @@ detect_offload_arch() {
     if command -v rocm_agent_enumerator >/dev/null 2>&1; then
         arch=$(rocm_agent_enumerator 2>/dev/null | grep -E '^gfx[0-9]+' | sort -r | head -n1)
         if [ -n "$arch" ]; then
-            echo "$arch"
+            echo "--offload-arch=$arch"
             return 0
         fi
     fi
 }
 DETECTED_ARCH=$(detect_offload_arch)
-echo "Current offload-arch=$DETECTED_ARCH"
+echo "Current $DETECTED_ARCH"
 
 echo "USE_NVSHMEM=$USE_NVSHMEM"
 echo "USE_ROCSHMEM=$USE_ROCSHMEM"
@@ -101,7 +101,7 @@ if [ "$USE_ROCSHMEM" == "ON" ]; then
 
     build_rocshmem
     SHMEM_INSTALL_PREFIX=$(pwd)/third-party/rocshmem_install
-    COMPILE_OPTIONS=${COMPILE_OPTIONS:= -fPIC -D__HIP_PLATFORM_AMD__=1 -DUSE_ROCM=1 -DHIPBLAS_V2 -DCUDA_HAS_FP16=1 -O3 -fgpu-rdc -DTORCH_API_INCLUDE_EXTENSION_H '-DPYBIND11_COMPILER_TYPE="_gcc"' '-DPYBIND11_STDLIB="_libstdcpp"' '-DPYBIND11_BUILD_ABI="_cxxabi1014"' -DTORCH_EXTENSION_NAME=deep_ep_cpp -D_GLIBCXX_USE_CXX11_ABI=1 --offload-arch=gfx936 --offload-arch=gfx938 -std=c++17 -Wno-return-type}
+    COMPILE_OPTIONS=${COMPILE_OPTIONS:= -fPIC -D__HIP_PLATFORM_AMD__=1 -DUSE_ROCM=1 -DHIPBLAS_V2 -DCUDA_HAS_FP16=1 -O3 -fgpu-rdc -DTORCH_API_INCLUDE_EXTENSION_H '-DPYBIND11_COMPILER_TYPE="_gcc"' '-DPYBIND11_STDLIB="_libstdcpp"' '-DPYBIND11_BUILD_ABI="_cxxabi1014"' -DTORCH_EXTENSION_NAME=deep_ep_cpp -D_GLIBCXX_USE_CXX11_ABI=1 ${DETECTED_ARCH}  -std=c++17 -Wno-return-type}
     if [ "$ROCM_DISABLE_CTX" == "ON" ]; then
         COMPILE_OPTIONS="-DROCM_DISABLE_CTX $COMPILE_OPTIONS"
     fi
@@ -145,21 +145,64 @@ if [ "$USE_NVSHMEM" == "ON" ]; then
     # build_dushmem
     # SHMEM_INSTALL_PREFIX=$(pwd)/third-party/dushmem_install
     SHMEM_INSTALL_PREFIX=${ROCM_PATH}/dushmem
-    COMPILE_OPTIONS=${COMPILE_OPTIONS:= -fPIC -DFORCE_DUSHMEM_API -DHIP_ENABLE_WARP_SYNC_BUILTINS -D__HIP_PLATFORM_AMD__=1 -DUSE_ROCM=1 -DHIPBLAS_V2 -DCUDA_HAS_FP16=1 -O3 -fgpu-rdc -DTORCH_API_INCLUDE_EXTENSION_H '-DPYBIND11_COMPILER_TYPE="_gcc"' '-DPYBIND11_STDLIB="_libstdcpp"' '-DPYBIND11_BUILD_ABI="_cxxabi1014"' -DTORCH_EXTENSION_NAME=deep_ep_cpp -D_GLIBCXX_USE_CXX11_ABI=1 --offload-arch=gfx936 --offload-arch=gfx938 -std=c++17 -Wno-return-type}
+    COMPILE_OPTIONS=${COMPILE_OPTIONS:= -fPIC -DFORCE_DUSHMEM_API -DHIP_ENABLE_WARP_SYNC_BUILTINS -D__HIP_PLATFORM_AMD__=1 -DUSE_ROCM=1 -DHIPBLAS_V2 -DCUDA_HAS_FP16=1 -O3 -fgpu-rdc -DTORCH_API_INCLUDE_EXTENSION_H '-DPYBIND11_COMPILER_TYPE="_gcc"' '-DPYBIND11_STDLIB="_libstdcpp"' '-DPYBIND11_BUILD_ABI="_cxxabi1014"' -DTORCH_EXTENSION_NAME=deep_ep_cpp -D_GLIBCXX_USE_CXX11_ABI=1 ${DETECTED_ARCH} -std=c++17 -Wno-return-type}
     SHMEM_LINK_OPTIONS="-Wl,-rpath,${SHMEM_INSTALL_PREFIX}/lib/ -l:libdushmem_device.a -ldushmem_host"
 fi
 # -------------------------- duSHMEM END -------------------------- #
 
 INCLUDE_PATHS=${INCLUDE_PATHS:=-Icsrc/ -I${SHMEM_INSTALL_PREFIX}/include/ -I/opt/mpi/include -I${PYTHON_PLATLIB}/torch/include -I${PYTHON_PLATLIB}/torch/include/torch/csrc/api/include -I${PYTHON_PLATLIB}/torch/include/TH -I${PYTHON_PLATLIB}/torch/include/THC -I${PYTHON_PLATLIB}/torch/include/THH -I/opt/dtk/include -I${PYTHON_INCLUDE}}
 
-hipcc ${INCLUDE_PATHS} -c $(pwd)/csrc/kernels/runtime.cu -o build_/runtime.o ${COMPILE_OPTIONS}
-hipcc ${INCLUDE_PATHS} -c $(pwd)/csrc/kernels/layout.cu -o build_/layout.o ${COMPILE_OPTIONS}
-hipcc ${INCLUDE_PATHS} -c $(pwd)/csrc/kernels/intranode.cu -o build_/intranode.o ${COMPILE_OPTIONS}
-hipcc ${INCLUDE_PATHS} -c $(pwd)/csrc/kernels/internode.cu -o build_/internode.o ${COMPILE_OPTIONS}
-hipcc ${INCLUDE_PATHS} -c $(pwd)/csrc/kernels/internode_ll.cu -o build_/internode_ll.o ${COMPILE_OPTIONS}
-hipcc ${INCLUDE_PATHS} -c $(pwd)/csrc/deep_ep.cu -o build_/deep_ep.o ${COMPILE_OPTIONS}
+# 定义源文件列表（相对路径）
+SOURCES=(
+    "csrc/kernels/runtime.cu"
+    "csrc/kernels/layout.cu"
+    "csrc/kernels/intranode.cu"
+    "csrc/kernels/internode.cu"
+    "csrc/kernels/internode_ll.cu"
+    "csrc/deep_ep.cu"
+)
 
-hipcc -Wno-unused-result -Wsign-compare -DNDEBUG -g -fwrapv -O2 -Wall -g -fstack-protector-strong -Wformat -Werror=format-security -g -fwrapv -O2 -shared -Wl,-O1 -Wl,-Bsymbolic-functions build_/internode.o build_/intranode.o build_/runtime.o build_/deep_ep.o build_/layout.o build_/internode_ll.o -L${SHMEM_INSTALL_PREFIX}/lib/ -L/opt/mpi/lib -L/opt/dtk/hip/lib -L/usr/lib/x86_64-linux-gnu -lhipblaslt -lamdhip64 -o deep_ep/deep_ep_cpp.cpython-310-x86_64-linux-gnu.so -Wl,-rpath,/opt/dtk/lib -fgpu-rdc --hip-link --offload-arch=gfx936 --offload-arch=gfx938 -shared -Wl,-soname,deep_ep/deep_ep_cpp.cpython-310-x86_64-linux-gnu.so -L"${llvm_path}/include/../lib/linux" -lclang_rt.builtins-x86_64 /opt/dtk/hip/lib/libgalaxyhip.so ${llvm_path}/lib/linux/libclang_rt.builtins-x86_64.a /opt/hyhal/lib/libhsa-runtime64.so -L${PYTHON_PLATLIB}/torch/lib -L/opt/dtk/lib -L/opt/dtk/hip/lib -L/usr/local/lib -lc10 -ltorch -ltorch_cpu -ltorch_python -lamdhip64 -lc10_hip -ltorch_hip -lrocm-core -lrocm_smi64 ${SHMEM_LINK_OPTIONS} -fgpu-rdc --hip-link -lamdhip64 -lhsa-runtime64 -l:libmpi.so -Wl,-rpath,/opt/mpi/lib/ -libverbs -lmlx5
+# 初始化对象文件列表
+OBJECTS=()
+
+# 编译每个源文件
+for src in "${SOURCES[@]}"; do
+    # 生成对应的 .o 文件名（保留目录结构或扁平化）
+    obj="build_/$(basename "${src%.cu}.o")"
+    OBJECTS+=("$obj")
+
+    # 检查是否需要重新编译：条件：obj 不存在，或 src 比 obj 新
+    if [[ ! -f "$obj" ]] || [[ "$src" -nt "$obj" ]]; then
+        echo "Compiling $src -> $obj"
+        hipcc ${INCLUDE_PATHS} -c "$src" -o "$obj" ${COMPILE_OPTIONS}
+    else
+        echo "Skipping $src (up to date)"
+    fi
+done
+
+# 链接阶段
+OUTPUT="deep_ep/deep_ep_cpp.cpython-310-x86_64-linux-gnu.so"
+
+# 检查是否需要重新链接
+need_link=false
+if [[ ! -f "$OUTPUT" ]]; then
+    need_link=true
+else
+    for obj in "${OBJECTS[@]}"; do
+        if [[ "$obj" -nt "$OUTPUT" ]]; then
+            need_link=true
+            break
+        fi
+    done
+fi
+
+if [[ "$need_link" == true ]]; then
+    echo "Linking -> $OUTPUT"
+    hipcc -Wno-unused-result -Wsign-compare -DNDEBUG -g -fwrapv -O2 -Wall -g -fstack-protector-strong -Wformat -Werror=format-security -g -fwrapv -O2 -shared -Wl,-O1 -Wl,-Bsymbolic-functions "${OBJECTS[@]}" -L${SHMEM_INSTALL_PREFIX}/lib/ -L/opt/mpi/lib -L/opt/dtk/hip/lib -L/usr/lib/x86_64-linux-gnu -lhipblaslt -lamdhip64 -o "$OUTPUT" -Wl,-rpath,/opt/dtk/lib -fgpu-rdc --hip-link ${DETECTED_ARCH} -shared -Wl,-soname,"$(basename "$OUTPUT")" -L"${llvm_path}/include/../lib/linux" -lclang_rt.builtins-x86_64 /opt/dtk/hip/lib/libgalaxyhip.so ${llvm_path}/lib/linux/libclang_rt.builtins-x86_64.a /opt/hyhal/lib/libhsa-runtime64.so -L${PYTHON_PLATLIB}/torch/lib -L/opt/dtk/lib -L/opt/dtk/hip/lib -L/usr/local/lib -lc10 -ltorch -ltorch_cpu -ltorch_python -lamdhip64 -lc10_hip -ltorch_hip -lrocm-core -lrocm_smi64 ${SHMEM_LINK_OPTIONS} -fgpu-rdc --hip-link -lamdhip64 -lhsa-runtime64 -l:libmpi.so -Wl,-rpath,/opt/mpi/lib/ -libverbs -lmlx5
+    echo "Successfully built $OUTPUT"
+else
+    echo "Skipping linking ($OUTPUT is up to date)"
+fi
 
 # build whl
 echo "Using Python: $(which python3)"
