@@ -165,14 +165,17 @@ SOURCES=(
 # 初始化对象文件列表
 OBJECTS=()
 
+# 检查是否需要强制重新编译（如果 shmem 库有更新）
+FORCE_REBUILD=true
+
 # 编译每个源文件
 for src in "${SOURCES[@]}"; do
     # 生成对应的 .o 文件名（保留目录结构或扁平化）
     obj="build_/$(basename "${src%.cu}.o")"
     OBJECTS+=("$obj")
 
-    # 检查是否需要重新编译：条件：obj 不存在，或 src 比 obj 新
-    if [[ ! -f "$obj" ]] || [[ "$src" -nt "$obj" ]]; then
+    # 检查是否需要重新编译
+    if [[ "$FORCE_REBUILD" == true ]] || [[ ! -f "$obj" ]] || [[ "$src" -nt "$obj" ]]; then
         echo "Compiling $src -> $obj"
         hipcc ${INCLUDE_PATHS} -c "$src" -o "$obj" ${COMPILE_OPTIONS}
     else
@@ -185,7 +188,7 @@ OUTPUT="deep_ep/deep_ep_cpp.cpython-310-x86_64-linux-gnu.so"
 
 # 检查是否需要重新链接
 need_link=false
-if [[ ! -f "$OUTPUT" ]]; then
+if [[ "$FORCE_REBUILD" == true ]] || [[ ! -f "$OUTPUT" ]]; then
     need_link=true
 else
     for obj in "${OBJECTS[@]}"; do
