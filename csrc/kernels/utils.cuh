@@ -16,19 +16,8 @@
             _Pragma("unroll") for (int __j = 0; __j < (UNROLL_FACTOR); ++__j)                      \
                 ST_FUNC(__dst + __i + __j * kWarpSize, unrolled_values[__j]);                      \
         }                                                                                          \
-        {                                                                                          \
-            int __i = ((N) / kLoopStride) * kLoopStride + (LANE_ID);                               \
-            _Pragma("unroll") for (int __j = 0; __j < (UNROLL_FACTOR); ++__j) {                    \
-                if (__i + __j * kWarpSize < (N)) {                                                 \
-                    unrolled_values[__j] = LD_FUNC(__src + __i + __j * kWarpSize);                 \
-                }                                                                                  \
-            }                                                                                      \
-            _Pragma("unroll") for (int __j = 0; __j < (UNROLL_FACTOR); ++__j) {                    \
-                if (__i + __j * kWarpSize < (N)) {                                                 \
-                    ST_FUNC(__dst + __i + __j * kWarpSize, unrolled_values[__j]);                  \
-                }                                                                                  \
-            }                                                                                      \
-        }                                                                                          \
+        for (int __i = ((N) / kLoopStride) * kLoopStride + (LANE_ID); __i < (N); __i += kWarpSize) \
+            ST_FUNC(__dst + __i, LD_FUNC(__src + __i)); \
     }
 
 #define UNROLLED_WARP_COPY_LL(UNROLL_FACTOR, LANE_ID, N, DST, SRC, LD_FUNC, ST_FUNC)                                                        \
@@ -142,7 +131,7 @@ __device__ __forceinline__ void memory_fence_cta() {
 }
 
 __device__ __forceinline__ void st_relaxed_sys_global(int *ptr, int val) {
-    __builtin_nontemporal_store(val, ptr);
+    __hip_atomic_store(ptr, val, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_SYSTEM);
 }
 
 __device__ __forceinline__ void st_release_sys_global(const int *ptr, int val) {
@@ -158,11 +147,17 @@ __device__ __forceinline__ void st_release_cta(const int *ptr, int val) {
 }
 
 __device__ __forceinline__ int ld_relaxed_sys_global(const int *ptr) {
-    int res = __builtin_nontemporal_load(ptr);
-    return res;
+    int ret;
+    ret = __hip_atomic_load(ptr, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_SYSTEM);
+    return ret;
 }
 __device__ __forceinline__ int ld_relaxed_sys_global(const uint64_t *ptr) {
     uint64_t ret;
+    ret = __hip_atomic_load(ptr, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_SYSTEM);
+    return ret;
+}
+__device__ __forceinline__ int ld_relaxed_sys_global(const int64_t *ptr) {
+    int64_t ret;
     ret = __hip_atomic_load(ptr, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_SYSTEM);
     return ret;
 }
@@ -178,6 +173,13 @@ __device__ __forceinline__ uint64_t ld_acquire_sys_global(const uint64_t *ptr) {
     ret = __hip_atomic_load(ptr, __ATOMIC_ACQUIRE, __HIP_MEMORY_SCOPE_SYSTEM);
     return ret;
 }
+
+__device__ __forceinline__ int64_t ld_acquire_sys_global(const int64_t *ptr) {
+    int64_t ret;
+    ret = __hip_atomic_load(ptr, __ATOMIC_ACQUIRE, __HIP_MEMORY_SCOPE_SYSTEM);
+    return ret;
+}
+
 
 __device__ __forceinline__ int ld_acquire_global(const int *ptr) {
     int ret;
