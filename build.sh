@@ -1,5 +1,5 @@
 #!/bin/bash
-# set -eux
+set -eux
 
 export amd_comgr_DIR=${ROCM_PATH}/lib64/cmake
 llvm15_path=${ROCM_PATH}/llvm/lib/clang/15.0.0
@@ -184,7 +184,8 @@ for src in "${SOURCES[@]}"; do
 done
 
 # 链接阶段
-OUTPUT="deep_ep/deep_ep_cpp.cpython-310-x86_64-linux-gnu.so"
+ext_suffix=$(python3 -c 'import sysconfig; print(sysconfig.get_config_var("EXT_SUFFIX"))')
+OUTPUT="deep_ep/deep_ep_cpp$ext_suffix"
 
 # 检查是否需要重新链接
 need_link=false

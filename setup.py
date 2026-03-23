@@ -2,6 +2,7 @@ import os, sys
 import subprocess
 import setuptools
 import subprocess
+import sysconfig
 from typing import Optional
 import subprocess
 
@@ -110,6 +111,6 @@ if __name__ == '__main__':
         version=get_deepep_version(),
         packages=setuptools.find_packages(include=['deep_ep']),
         include_package_data=True,
-        package_data={"deep_ep": ["deep_ep_cpp.cpython-310-x86_64-linux-gnu.so"]},
+        package_data={"deep_ep": [f"deep_ep_cpp{sysconfig.get_config_var('EXT_SUFFIX')}"]},
         zip_safe=False,
     )
