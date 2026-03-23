@@ -40,6 +40,8 @@ class Buffer:
         allow_mnnvl: bool = False,
         explicitly_destroy: bool = False,
         enable_shrink: bool = False,
+        enable_dispatch_ll_layered: bool = False,
+        enable_combine_overlap: bool = False,
     ) -> None:
         """
         Initialize the communication buffer.
@@ -60,6 +62,8 @@ class Buffer:
                 otherwise, the resources will be released by the destructor.
                 Note: Releasing resources in the destructor may cause Python's exception handling process to hang.
             enable_shrink: whether to enable shrink mode. The enable mode allocates a mask buffer to support masking ranks dynamically.
+            enable_dispatch_ll_layered: Enable low-latency mode with hierarchical dispatch operators.
+            enable_combine_overlap: deepgemm DOWN gemm overlop combine send
         """
         check_nvlink_connections(group)
 
@@ -72,6 +76,10 @@ class Buffer:
         self.low_latency_mode = low_latency_mode
         self.explicitly_destroy = explicitly_destroy
         self.enable_shrink = enable_shrink
+
+        if enable_dispatch_ll_layered and enable_shrink:  # Currently, the layered algorithm for ll dispatch has been optimized, so the shrink mode is no longer supported.
+            print("DeepEP [ERROR] not support shrink, disable it", flush=True)
+            enable_shrink = False
         self.runtime = deep_ep_cpp.Buffer(
             self.rank,
             self.group_size,
@@ -79,7 +87,9 @@ class Buffer:
             num_rdma_bytes,
             low_latency_mode,
             explicitly_destroy,
-            enable_shrink
+            enable_shrink,
+            enable_dispatch_ll_layered,
+            enable_combine_overlap
         )
 
         # Synchronize device IDs
@@ -212,7 +222,8 @@ class Buffer:
 
     @staticmethod
     def get_low_latency_rdma_size_hint(
-        num_max_dispatch_tokens_per_rank: int, hidden: int, num_ranks: int, num_experts: int, quant_group_size: int = 0
+        num_max_dispatch_tokens_per_rank: int, hidden: int, num_ranks: int, num_experts: int, 
+        enable_dispatch_ll_layered: bool = False, quant_group_size: int = 0
     ) -> int:
         """
         Get a minimum size requirement for the RDMA buffer. The size calculation will be done with BF16.
@@ -228,7 +239,8 @@ class Buffer:
             size: the RDMA buffer size recommended.
         """
         return deep_ep_cpp.get_low_latency_rdma_size_hint(
-            num_max_dispatch_tokens_per_rank, hidden, num_ranks, num_experts, quant_group_size
+            num_max_dispatch_tokens_per_rank, hidden, num_ranks, num_experts, 
+            enable_dispatch_ll_layered, quant_group_size
         )
 
     def get_comm_stream(self) -> torch.Stream:
@@ -921,9 +933,11 @@ class Buffer:
         recv_x = (packed_recv_x, packed_recv_x_scales) if (quant_type > 0) else packed_recv_x
         return recv_x, packed_recv_count, handle, EventOverlap(event, tensors_to_record if async_finish else None), hook
 
-    # noinspection PyTypeChecker
-    def low_latency_combine(self, x: torch.Tensor, topk_idx: torch.Tensor, topk_weights: torch.Tensor,
-                            handle: tuple, use_logfmt: bool = False,
+    def low_latency_combine(self, x: torch.Tensor, topk_idx: torch.Tensor, topk_weights: torch.Tensor, handle: tuple,
+                            # combine sbo params
+                            packed_recv_count: torch.Tensor = None, comp_signal: torch.Tensor = None,
+                            block_m: int = -1, threshold: int = -1, num_sms: int = -1,
+                            use_logfmt: bool = False,
                             zero_copy: bool = False, async_finish: bool = False,
                             return_recv_hook: bool = False, out: Optional[torch.Tensor] = None,
                             combine_wait_recv_cost_stats: Optional[torch.Tensor] = None) -> \
@@ -945,13 +959,13 @@ class Buffer:
             topk_weights: `[num_combined_tokens, num_topk]` with `torch.float`, the expert weights selected by the dispatched
                 tokens. The received tokens will be reduced with the weights in this tensor.
             handle: the communication handle given by the `dispatch` function.
-            use_logfmt: whether to use an internal "LogFMT with dynamic per-64-channel cast" format (10 bits).
             zero_copy: whether the tensor is already copied into the RDMA buffer, should be cooperative
                 with `get_next_low_latency_combine_buffer`.
             async_finish: the current stream will not wait for the communication kernels to be finished if set.
             return_recv_hook: return a receiving hook if set. If set, the kernel will just do the RDMA request issues,
                 but **without actually receiving the data**. You must call the received hook to make sure the data's arrival.
                 If you not set this flag, the kernel will ensure the data's arrival.
+            use_logfmt: whether to use an internal "LogFMT with dynamic per-64-channel cast" format (10 bits).
             out: the in-place output tensor, if set, the kernel will write the result to this tensor and return it directly.
             combine_wait_recv_cost_stats: a cumulative time spent waiting to receive each token tensor for statistics,
                 which should have shape `[num_ranks, num_ranks]` and be typed as `torch.int64`.
@@ -964,6 +978,7 @@ class Buffer:
         """
         src_info, layout_range, num_max_dispatch_tokens_per_rank, hidden, num_experts = handle
         combined_x, event, hook = self.runtime.low_latency_combine(x, topk_idx, topk_weights, src_info, layout_range,
+                                                                   packed_recv_count, comp_signal, block_m, threshold, num_sms,
                                                                    combine_wait_recv_cost_stats, 
                                                                    num_max_dispatch_tokens_per_rank, num_experts,
                                                                    use_logfmt, zero_copy, async_finish, return_recv_hook, out)

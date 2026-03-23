@@ -135,8 +135,10 @@ struct LowLatencyLayout {
     }
 
     LowLatencyLayout(void *rdma_buffer, int num_max_dispatch_tokens_per_rank, int hidden,
-                     int num_ranks, int num_experts, int quant_group_size=0) {
+                     int num_ranks, int num_experts, bool enable_dispatch_ll_layered=false, int quant_group_size=0) {
         const int num_scales = hidden / QUANTIZATION_GROUPSIZE;
+
+        const int num_nodes = num_ranks / NUM_MAX_NVL_PEERS;  // 计算结点数
 
         // Dispatch and combine layout:
         //  - 2 symmetric odd/even send buffer
@@ -152,7 +154,9 @@ struct LowLatencyLayout {
             (quant_group_size == 0 ? 4 : num_scales) * sizeof(float));   // 应该是1，但是代码中为了满足int4对齐
 
         // 与internode_ll::combine 中的 num_bytes_per_slot 相等
-        size_t num_bytes_per_combine_msg = hidden * sizeof(hip_bfloat16) + num_scales * sizeof(__hip_bfloat162);
+        size_t num_bytes_per_combine_msg = hidden * sizeof(hip_bfloat16) + 
+                                           (enable_dispatch_ll_layered ? 0 : // 即enable_combine_overlap==true，执行函数combine_sbo
+                                           num_scales * sizeof(__hip_bfloat162));
 
         // Send buffer
         size_t dispatch_send_buffer_bytes =
@@ -176,6 +180,10 @@ struct LowLatencyLayout {
 
         // Symmetric signaling buffers
         size_t dispatch_recv_count_buffer_bytes = num_experts * sizeof(int64_t);
+        if (enable_dispatch_ll_layered) {
+            dispatch_recv_count_buffer_bytes +=
+                NUM_MAX_NVL_PEERS * num_nodes * num_max_dispatch_tokens_per_rank * sizeof(int) + NUM_MAX_NVL_PEERS * sizeof(int);
+        }
         size_t combine_recv_flag_buffer_bytes = dispatch_recv_count_buffer_bytes;
         size_t signaling_buffer_bytes = std::max(dispatch_recv_count_buffer_bytes, combine_recv_flag_buffer_bytes);
         size_t signaling_buffer_bytes_aligned = ALIGN<size_t>(signaling_buffer_bytes, 128);
@@ -205,9 +213,11 @@ struct LowLatencyLayout {
 };
 
 inline size_t get_low_latency_rdma_size_hint(int num_max_dispatch_tokens_per_rank, int hidden,
-                                             int num_ranks, int num_experts, int quant_group_size=0) {
+                                             int num_ranks, int num_experts, 
+                                             bool enable_dispatch_ll_layered=false, int quant_group_size=0) {
     auto num_bytes =
-        LowLatencyLayout(nullptr, num_max_dispatch_tokens_per_rank, hidden, num_ranks, num_experts, quant_group_size)
+        LowLatencyLayout(nullptr, num_max_dispatch_tokens_per_rank, hidden, num_ranks, num_experts, 
+        enable_dispatch_ll_layered, quant_group_size)
             .total_bytes;
     return ((num_bytes + NUM_BUFFER_ALIGNMENT_BYTES) / NUM_BUFFER_ALIGNMENT_BYTES) *
            NUM_BUFFER_ALIGNMENT_BYTES;

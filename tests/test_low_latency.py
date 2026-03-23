@@ -34,6 +34,10 @@ def query_mask_buffer_and_check(api: Literal["dispatch", "combine", "clean"], bu
     assert set(mask_status.nonzero().squeeze(-1).tolist()) == expected_masked_ranks
 
 
+def ceil_div(a, b):
+    return (a + b - 1) // b
+
+
 def test_main(num_tokens: int,
               hidden: int,
               num_experts: int,
@@ -42,11 +46,16 @@ def test_main(num_tokens: int,
               num_ranks: int,
               group: dist.ProcessGroup,
               buffer: deep_ep.Buffer,
+              enable_dispatch_ll_layered: bool = False,
+              enable_combine_overlap: bool = False,
               use_logfmt: bool = False,
               seed: int = 0):
     torch.manual_seed(seed + rank)
     random.seed(seed + rank)
 
+    print(f"enable_dispatch_ll_layered={enable_dispatch_ll_layered}, enable_combine_overlap={enable_combine_overlap}, use_logfmt={use_logfmt}")
+    assert not (use_logfmt and (enable_dispatch_ll_layered or enable_combine_overlap)), \
+        "use_logfmt=True and enable_dispatch_ll_layered/enable_combine_overlap conflict"
     assert num_experts % num_ranks == 0
     num_local_experts = num_experts // num_ranks
 
@@ -84,10 +93,13 @@ def test_main(num_tokens: int,
     hash_value, num_times = 0, 0
     for x_i, current_x in enumerate(x_list):
         for return_recv_hook in (False, True):
-            for quant_type in (0, 1, 2, 3, ): # 0: 不量化, 1: int8, 2: FP8_E4M3, 3: FP8_UE8M0 (仅支持round_scale=True), 4: FP8_E5M2
+            if enable_combine_overlap and (not return_recv_hook):  # return_recv_hook 为False 时，不能启用 overlop
+                continue
+
+            for quant_type in (0, 1, 2, 3,):  # 0: 不量化, 1: int8, 2: FP8_E4M3, 3: FP8_UE8M0 (仅支持round_scale=True), 4: FP8_E5M2
                 dispatch_use_quant = quant_type > 0
-                for fp8_round_scale in (False, True) if quant_type != 3 else (True, ):
-                    for quant_group_size in (0, 128,) if quant_type >= 2 else (0, ):
+                for fp8_round_scale in (False, True) if quant_type != 3 else (True,):
+                    for quant_group_size in (0, 128,) if quant_type >= 2 else (0,):
                         if quant_type == 3 and (fp8_round_scale == False or quant_group_size == 0):
                             continue
 
@@ -131,9 +143,14 @@ def test_main(num_tokens: int,
                                 recv_x = recv_x[:num_valid_tokens]
                                 recv_x_amin = recv_x[:, :-128].amin(dim=-1)
                                 recv_x_amax = recv_x[:, :-128].amax(dim=-1)
-                                recv_src_info = recv_src_info[:num_valid_tokens]
+
+                                if (enable_dispatch_ll_layered or enable_combine_overlap):
+                                    recv_src_info = recv_src_info[:num_valid_tokens] & int_mask  # 掩掉多余的信息
+                                else:
+                                    recv_src_info = recv_src_info[:num_valid_tokens]
+
                                 assert torch.equal(recv_x_amin, recv_x_amax)
-                                
+
                                 if dispatch_use_quant:
                                     assert calc_diff(recv_x[:, -1], recv_src_info.view(-1)) < 0.007
 
@@ -148,6 +165,7 @@ def test_main(num_tokens: int,
                                         if not fp8_round_scale:
                                             assert (recv_x_amin == j - rank_offset).sum().item() == (all_topk_idx[j] == expert_id).sum().item()
                                             assert (recv_x[begin_idx:begin_idx + count, :-128] - j + rank_offset).sum().item() == 0
+
                             if dispatch_use_quant:
                                 hash_value ^= hash_tensor(packed_recv_x[0][i, :num_valid_tokens])
                                 hash_value ^= hash_tensor(packed_recv_x[1][i, :num_valid_tokens])
@@ -155,19 +173,42 @@ def test_main(num_tokens: int,
                                 hash_value ^= hash_tensor(packed_recv_x[i, :num_valid_tokens])
 
                         # Check combine correctness
-                        for zero_copy in (False, ) if use_logfmt else (False, True, ):
+                        for zero_copy in (False,) if use_logfmt else (False, True,):
                             if zero_copy:
                                 buffer.get_next_low_latency_combine_buffer(handle)[:, :, :] = simulated_gemm_x
                             out = torch.empty((num_tokens, hidden), dtype=torch.bfloat16, device='cuda')
-                            combined_x, event, hook = buffer.low_latency_combine(simulated_gemm_x,
-                                                                                 topk_idx,
-                                                                                 topk_weights,
-                                                                                 handle,
-                                                                                 use_logfmt=use_logfmt,
-                                                                                 async_finish=not return_recv_hook,
-                                                                                 zero_copy=zero_copy,
-                                                                                 return_recv_hook=return_recv_hook,
-                                                                                 out=out)
+                            if enable_combine_overlap:
+                                block_m, threshold, num_sms = 64, 10, 3
+                                total_num_per_expert = ceil_div(num_tokens * num_ranks, block_m)  # 每个本地专家 总的信号数？？
+                                comp_signal = torch.zeros(num_local_experts * total_num_per_expert, dtype=torch.int32, device='cuda')
+
+                                for i in range(num_local_experts):
+                                    vaild_num = ceil_div(packed_recv_count[i], block_m)
+                                    comp_signal[i * total_num_per_expert:i * total_num_per_expert + vaild_num] = threshold
+                                combined_x, event, hook = buffer.low_latency_combine(simulated_gemm_x,
+                                                                                     topk_idx,
+                                                                                     topk_weights,
+                                                                                     handle,
+                                                                                     packed_recv_count=packed_recv_count,
+                                                                                     comp_signal=comp_signal,
+                                                                                     block_m=block_m,
+                                                                                     threshold=threshold,
+                                                                                     num_sms=num_sms,
+                                                                                     async_finish=not return_recv_hook,
+                                                                                     zero_copy=zero_copy,
+                                                                                     return_recv_hook=return_recv_hook,
+                                                                                     out=out)
+                            else:
+                                combined_x, event, hook = buffer.low_latency_combine(simulated_gemm_x,
+                                                                                     topk_idx,
+                                                                                     topk_weights,
+                                                                                     handle,
+                                                                                     use_logfmt=use_logfmt,
+                                                                                     async_finish=not return_recv_hook,
+                                                                                     zero_copy=zero_copy,
+                                                                                     return_recv_hook=return_recv_hook,
+                                                                                     out=out)
+
                             hook() if return_recv_hook else event.current_stream_wait()
                             if do_check:
                                 diff = calc_diff(current_x * topk_weights.masked_fill(topk_idx == -1, 0).sum(dim=1).view(-1, 1), combined_x)
@@ -177,8 +218,12 @@ def test_main(num_tokens: int,
                                 hash_value ^= hash_tensor(combined_x)
 
                         if rank == 0:
-                            print(f"data:{x_i}, return_recv_hook:{return_recv_hook}, quant_type:{quant_type}, ", 
+                            print(f"data:{x_i}, return_recv_hook:{return_recv_hook}, quant_type:{quant_type}, ",
                                   f"fp8_round_scale:{fp8_round_scale}, quant_group_size:{quant_group_size} pass")
+
+    print("deep_ep 全部正确性测试完成")
+    if enable_dispatch_ll_layered or enable_combine_overlap:
+        return hash_value
 
     # noinspection PyShadowingNames
     def large_gemm_with_hook(hook):
@@ -242,7 +287,13 @@ def test_loop(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
     num_tokens, hidden = args.num_tokens, args.hidden
     num_topk, num_experts = args.num_topk, args.num_experts
 
-    num_rdma_bytes = deep_ep.Buffer.get_low_latency_rdma_size_hint(num_tokens, hidden, num_ranks, num_experts)
+    enable_dispatch_ll_layered = args.enable_dispatch_ll_layered
+    enable_combine_overlap = args.enable_combine_overlap
+    if enable_dispatch_ll_layered:
+        enable_combine_overlap = True
+
+    num_rdma_bytes = deep_ep.Buffer.get_low_latency_rdma_size_hint(num_tokens, hidden, num_ranks, num_experts,
+                                                                   enable_dispatch_ll_layered=enable_dispatch_ll_layered)
     if local_rank == 0:
         print(f'Allocating buffer size: {num_rdma_bytes / 1e6} MB ...', flush=True)
     buffer = deep_ep.Buffer(group,
@@ -251,7 +302,11 @@ def test_loop(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
                             num_qps_per_rank=num_experts // num_ranks,
                             allow_nvlink_for_low_latency_mode=not args.disable_nvlink,
                             explicitly_destroy=True,
-                            allow_mnnvl=args.allow_mnnvl)
+                            allow_mnnvl=args.allow_mnnvl,
+                            enable_dispatch_ll_layered=enable_dispatch_ll_layered,
+                            enable_combine_overlap=enable_combine_overlap
+                            )
+    print("deep_ep 初始化完成")
     test_main(num_tokens,
               hidden,
               num_experts,
@@ -261,6 +316,8 @@ def test_loop(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
               group,
               buffer,
               use_logfmt=args.use_logfmt,
+              enable_dispatch_ll_layered=enable_dispatch_ll_layered,
+              enable_combine_overlap=enable_combine_overlap,
               seed=1)
 
     do_pressure_test = args.pressure_test
@@ -276,6 +333,8 @@ def test_loop(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
                              group,
                              buffer,
                              use_logfmt=args.use_logfmt,
+                             enable_dispatch_ll_layered=enable_dispatch_ll_layered,
+                             enable_combine_overlap=enable_combine_overlap,
                              seed=seed)
         for _ in range(20):
             assert test_main(num_tokens,
@@ -287,6 +346,8 @@ def test_loop(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
                              group,
                              buffer,
                              use_logfmt=args.use_logfmt,
+                             enable_dispatch_ll_layered=enable_dispatch_ll_layered,
+                             enable_combine_overlap=enable_combine_overlap,
                              seed=seed) == ref_hash, f'Error: seed={seed}'
 
     # Destroy the buffer runtime and communication group
@@ -309,6 +370,10 @@ if __name__ == '__main__':
     parser.add_argument("--pressure-test", action='store_true', help='Whether to do pressure test')
     parser.add_argument("--shrink-test", action='store_true', help='Whether to simulate failure and test shrink mode')
     parser.add_argument('--use-logfmt', action='store_true', help='Whether to test LogFMT combine')
+    # 新版 sbo 需要的
+    parser.add_argument('--enable-dispatch-ll-layered', action='store_true', help='Enable low-latency layered dispatch optimization')
+    parser.add_argument("--enable-combine-overlap", action='store_true', help='Enable GEMM-compute/communication overlap in the combine phase')
+
     args = parser.parse_args()
 
     num_processes = args.num_processes
