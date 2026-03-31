@@ -54,6 +54,7 @@
     }
 // HELPER FUNCTIONS
 // #####################################################################################
+#define DEVICE_INLINE __device__ inline __attribute__((always_inline))
 
 template <typename T>
 __device__ __forceinline__ T shfl_xor(const T val, int laneMask, int width = kWarpSize,
@@ -118,7 +119,6 @@ __device__ __forceinline__ void trap() {
 }
 
 __device__ __forceinline__ void memory_fence() {
-
     __threadfence_system();
 }
 
@@ -151,11 +151,13 @@ __device__ __forceinline__ int ld_relaxed_sys_global(const int *ptr) {
     ret = __hip_atomic_load(ptr, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_SYSTEM);
     return ret;
 }
+
 __device__ __forceinline__ int ld_relaxed_sys_global(const uint64_t *ptr) {
     uint64_t ret;
     ret = __hip_atomic_load(ptr, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_SYSTEM);
     return ret;
 }
+
 __device__ __forceinline__ int ld_relaxed_sys_global(const int64_t *ptr) {
     int64_t ret;
     ret = __hip_atomic_load(ptr, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_SYSTEM);
@@ -179,7 +181,6 @@ __device__ __forceinline__ int64_t ld_acquire_sys_global(const int64_t *ptr) {
     ret = __hip_atomic_load(ptr, __ATOMIC_ACQUIRE, __HIP_MEMORY_SCOPE_SYSTEM);
     return ret;
 }
-
 
 __device__ __forceinline__ int ld_acquire_global(const int *ptr) {
     int ret;
@@ -269,12 +270,22 @@ __device__ __forceinline__ void st_na_relaxed(const int *ptr, int val) {
     __hip_atomic_store(non_const_ptr, val, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT);
 }
 
+__device__ __forceinline__ void st_na_relaxed(const float *ptr, float val) {
+    float *non_const_ptr = const_cast<float *>(ptr);
+    __hip_atomic_store(non_const_ptr, val, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT);
+}
+
+__device__ __forceinline__ void st_na_relaxed(const int64_t *ptr, int64_t val) {
+    int64_t *non_const_ptr = const_cast<int64_t *>(ptr);
+    __hip_atomic_store(non_const_ptr, val, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT);
+}
+
 __device__ __forceinline__ void st_na_relaxed(const int4 *ptr, int4 val) {
     int4 *non_const_ptr = const_cast<int4 *>(ptr);
-    non_const_ptr->x    = val.x;
-    non_const_ptr->y    = val.y;
-    non_const_ptr->z    = val.z;
-    non_const_ptr->w    = val.w;
+    __hip_atomic_store(&(non_const_ptr->x), val.x, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT);
+    __hip_atomic_store(&(non_const_ptr->y), val.y, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT);
+    __hip_atomic_store(&(non_const_ptr->z), val.z, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT);
+    __hip_atomic_store(&(non_const_ptr->w), val.w, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT);
 }
 
 __device__ __forceinline__ void st_na_release(const int *ptr, int val) {
@@ -295,6 +306,14 @@ __device__ __forceinline__ void st_na_release(const uint64_t *ptr, uint64_t val)
 __device__ __forceinline__ void st_na_release(const int64_t *ptr, int64_t val) {
     int64_t *non_const_ptr = const_cast<int64_t *>(ptr);
     __hip_atomic_store(non_const_ptr, val, __ATOMIC_RELEASE, __HIP_MEMORY_SCOPE_AGENT);
+}
+
+__device__ __forceinline__ void st_na_release(const int4 *ptr, int4 val) {
+    int4 *non_const_ptr = const_cast<int4 *>(ptr);
+    __hip_atomic_store(&(non_const_ptr->x), val.x, __ATOMIC_RELEASE, __HIP_MEMORY_SCOPE_AGENT);
+    __hip_atomic_store(&(non_const_ptr->y), val.y, __ATOMIC_RELEASE, __HIP_MEMORY_SCOPE_AGENT);
+    __hip_atomic_store(&(non_const_ptr->z), val.z, __ATOMIC_RELEASE, __HIP_MEMORY_SCOPE_AGENT);
+    __hip_atomic_store(&(non_const_ptr->w), val.w, __ATOMIC_RELEASE, __HIP_MEMORY_SCOPE_AGENT);
 }
 
 // TODO:: apply "st.global.L1::no_allocate" in ROCM
