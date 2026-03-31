@@ -544,7 +544,8 @@ void dispatch(void *recv_x, float *recv_x_scales, int *recv_src_idx, int64_t *re
 #undef DISPATCH_LAUNCH_CASE
 }
 template <int kNumRanks>
-__global__ void cached_notify_combine(void **buffer_ptrs, int *send_head, int num_channels,
+__global__ void __launch_bounds__(kWarpSize * NUM_MAX_NVL_PEERS, 1)
+cached_notify_combine(void **buffer_ptrs, int *send_head, int num_channels,
                                       int num_recv_tokens, int num_memset_int,
                                       int **barrier_signal_ptrs, int rank) {
     const auto sm_id = static_cast<int>(blockIdx.x);
