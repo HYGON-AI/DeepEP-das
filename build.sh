@@ -55,6 +55,42 @@ for arg in "$@"; do
 done
 
 detect_offload_arch() {
+    # 获取当前硬件的 gfx 版本（例如 gfx936）
+    current_gfx=$(rocminfo 2>/dev/null | grep -E 'Name:.*gfx[0-9]+' | head -n1 | grep -oE 'gfx[0-9]+' | cut -c4-)
+    if [ -z "$current_gfx" ]; then
+        # 如果无法获取当前硬件版本，回退到原逻辑（选择最大的架构）
+        if command -v rocm_agent_enumerator >/dev/null 2>&1; then
+            arch=$(rocm_agent_enumerator 2>/dev/null | grep -E '^gfx[0-9]+' | sort -r | head -n1)
+            if [ -n "$arch" ]; then
+                echo "--offload-arch=$arch"
+                return 0
+            fi
+        fi
+        return 1
+    fi
+
+    # 转换为整数，以便比较（如 936）
+    current_gfx_int=$((current_gfx))
+
+    # 获取所有支持的 gfx 版本
+    if command -v rocm_agent_enumerator >/dev/null 2>&1; then
+        supported_archs=$(rocm_agent_enumerator 2>/dev/null | grep -E '^gfx[0-9]+' | sort -r)
+        if [ -n "$supported_archs" ]; then
+            # 过滤出大于或等于当前硬件版本的架构
+            filtered_archs=""
+            for arch in $supported_archs; do
+                arch_int=${arch:3}  # 字符串切片语法，提取版本号（如 940）
+                if [ "$arch_int" -ge "$current_gfx_int" ]; then
+                    filtered_archs="$filtered_archs --offload-arch=$arch"
+                fi
+            done
+
+            echo "$filtered_archs"
+            return 0
+        fi
+    fi
+
+    # 回退逻辑：如果没有匹配的架构，选择最大的架构
     if command -v rocm_agent_enumerator >/dev/null 2>&1; then
         arch=$(rocm_agent_enumerator 2>/dev/null | grep -E '^gfx[0-9]+' | sort -r | head -n1)
         if [ -n "$arch" ]; then
@@ -62,6 +98,8 @@ detect_offload_arch() {
             return 0
         fi
     fi
+
+    return 1
 }
 DETECTED_ARCH=$(detect_offload_arch)
 echo "Current $DETECTED_ARCH"

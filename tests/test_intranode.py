@@ -117,7 +117,8 @@ def test_main(args: argparse.Namespace, num_sms: int, local_rank: int, num_ranks
                         # Check `topk_weights`
                         recv_topk_weights_clone = recv_topk_weights.clone()
                         if current_x is not x_pure_rand:
-                            recv_topk_weights[recv_topk_idx.eq(-1)] = recv_topk_weights.amax(dim=1, keepdim=True).expand_as(recv_topk_weights)[recv_topk_idx.eq(-1)]
+                            max_weights = recv_topk_weights.amax(dim=1, keepdim=True) # Shape: [Batch, 1]
+                            recv_topk_weights = torch.where(recv_topk_idx == -1, max_weights, recv_topk_weights)
                             check_data(recv_topk_weights, rank_prefix_matrix)
 
                     # Test `num_worst_tokens != 0`
