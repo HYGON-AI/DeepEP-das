@@ -113,6 +113,8 @@ inline void LAUNCH_KERNEL_NON_COOPERATIVE(T &&config, Kern &&kernel, Args &&...a
 
 #define SWITCH_HIDDEN(case_macro)                                                                  \
     switch (hidden) {                                                                              \
+    case 2048:                                                                                     \
+        case_macro(2048);                                                                          \
     case 2560:                                                                                     \
         case_macro(2560);                                                                          \
     case 5120:                                                                                     \
