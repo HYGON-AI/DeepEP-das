@@ -119,7 +119,8 @@ def test_main(args: argparse.Namespace, num_sms: int, local_rank: int, num_ranks
                         # Check `topk_weights`
                         recv_topk_weights_clone = recv_topk_weights.clone()
                         if current_x is not x_pure_rand:
-                            recv_topk_weights[recv_topk_idx.eq(-1)] = recv_topk_weights.amax(dim=1, keepdim=True).expand_as(recv_topk_weights)[recv_topk_idx.eq(-1)]
+                            max_weights = recv_topk_weights.amax(dim=1, keepdim=True) # Shape: [Batch, 1]
+                            recv_topk_weights = torch.where(recv_topk_idx == -1, max_weights, recv_topk_weights)
                             check_data(recv_topk_weights, rank_prefix_matrix)
 
                     # Test `num_worst_tokens != 0`
@@ -251,7 +252,7 @@ def test_loop(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
                             num_qps_per_rank=(ll_num_experts // num_ranks if test_ll_compatibility else 1), explicitly_destroy=True)
     torch.manual_seed(rank)
 
-    for i in (48, ):
+    for i in (60, ):
         test_main(args, i, local_rank, num_ranks, rank, buffer, group)
         if local_rank == 0:
             print('', flush=True)
@@ -269,7 +270,7 @@ def test_loop(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Test intranode EP kernels')
-    
+
     group = parser.add_argument_group(title='extra distributed args')
     group.add_argument('--rank', default=-int(os.getenv('OMPI_COMM_WORLD_RANK', '0')), type=int,
                        help='node rank for distributed training')

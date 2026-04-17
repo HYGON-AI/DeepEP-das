@@ -52,8 +52,9 @@ def test_main(num_tokens: int,
               seed: int = 0):
     torch.manual_seed(seed + rank)
     random.seed(seed + rank)
+    if rank == 0:
+        print(f"enable_dispatch_ll_layered={enable_dispatch_ll_layered}, enable_combine_overlap={enable_combine_overlap}, use_logfmt={use_logfmt}")
 
-    print(f"enable_dispatch_ll_layered={enable_dispatch_ll_layered}, enable_combine_overlap={enable_combine_overlap}, use_logfmt={use_logfmt}")
     assert not (use_logfmt and (enable_dispatch_ll_layered or enable_combine_overlap)), \
         "use_logfmt=True and enable_dispatch_ll_layered/enable_combine_overlap conflict"
     assert num_experts % num_ranks == 0
@@ -144,7 +145,7 @@ def test_main(num_tokens: int,
                                 recv_x_amin = recv_x[:, :-128].amin(dim=-1)
                                 recv_x_amax = recv_x[:, :-128].amax(dim=-1)
 
-                                if (enable_dispatch_ll_layered or enable_combine_overlap):
+                                if enable_dispatch_ll_layered or enable_combine_overlap:
                                     recv_src_info = recv_src_info[:num_valid_tokens] & int_mask  # 掩掉多余的信息
                                 else:
                                     recv_src_info = recv_src_info[:num_valid_tokens]
@@ -179,7 +180,7 @@ def test_main(num_tokens: int,
                             out = torch.empty((num_tokens, hidden), dtype=torch.bfloat16, device='cuda')
                             if enable_combine_overlap:
                                 block_m, threshold, num_sms = 64, 10, 3
-                                total_num_per_expert = ceil_div(num_tokens * num_ranks, block_m)  # 每个本地专家 总的信号数？？
+                                total_num_per_expert = ceil_div(num_tokens * num_ranks, block_m)  # 每个本地专家 总的信号数
                                 comp_signal = torch.zeros(num_local_experts * total_num_per_expert, dtype=torch.int32, device='cuda')
 
                                 for i in range(num_local_experts):
