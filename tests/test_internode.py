@@ -143,7 +143,8 @@ def test_main(args: argparse.Namespace, num_sms: int,
 
                         # Check `topk_weights`
                         if not is_rand:
-                            recv_topk_weights[recv_topk_idx.eq(-1)] = recv_topk_weights.amax(dim=1, keepdim=True).expand_as(recv_topk_weights)[recv_topk_idx.eq(-1)]
+                            max_weights = recv_topk_weights.amax(dim=1, keepdim=True) # Shape: [Batch, 1]
+                            recv_topk_weights = torch.where(recv_topk_idx == -1, max_weights, recv_topk_weights)
                             check_data(recv_topk_weights, recv_gbl_rank_prefix_sum)
 
                     # Test cached dispatch (must without top-k staffs)
@@ -186,6 +187,7 @@ def test_main(args: argparse.Namespace, num_sms: int,
 
                     if local_rank == 0:
                         print(' passed', flush=True)
+
     if local_rank == 0:
         print('', flush=True)
 
@@ -201,6 +203,8 @@ def test_main(args: argparse.Namespace, num_sms: int,
         nvl_recv_bytes = (dispatch_bf16_nvl_recv_bytes * fp8_factor) if isinstance(current_x, tuple) else dispatch_bf16_nvl_recv_bytes
         for nvl_chunk_size in range(4, 45, 4):
             for rdma_chunk_size in range(4, 33, 4):
+                if rdma_buffer_size % rdma_chunk_size != 0:
+                    continue
                 config = deep_ep.Config(num_sms, nvl_chunk_size, nvl_buffer_size, rdma_chunk_size, rdma_buffer_size)
                 tune_args = {'x': current_x, 'handle': handle, 'config': config}
                 t, notify_t = bench_kineto(lambda: buffer.dispatch(**tune_args), ('dispatch', 'notify'), suppress_kineto_output=True)
@@ -233,6 +237,8 @@ def test_main(args: argparse.Namespace, num_sms: int,
     best_time, best_results = 1e10, None
     for nvl_chunk_size in range(1, 8, 1):
         for rdma_chunk_size in range(12 if num_nodes == 2 else 8, 33, 4):
+            if rdma_buffer_size % rdma_chunk_size != 0:
+                continue
             config = deep_ep.Config(num_sms, nvl_chunk_size, nvl_buffer_size, rdma_chunk_size, rdma_buffer_size)
             tune_args = {'x': recv_x, 'handle': handle, 'config': config}
             t, notify_t = bench_kineto(lambda: buffer.combine(**tune_args), ('combine', 'notify'), suppress_kineto_output=True)
@@ -265,8 +271,9 @@ def test_loop(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
         ll_num_tokens, ll_hidden, ll_num_experts, ll_num_topk = 16, 5120, 256, 9
         num_rdma_bytes_ll = deep_ep.Buffer.get_low_latency_rdma_size_hint(ll_num_tokens, ll_hidden, num_ranks, ll_num_experts)
 
-    num_sms = 48
+    num_sms = 60
     num_qps_per_rank = max(num_sms, ll_num_experts // num_ranks if args.test_ll_compatibility else 0)
+    deep_ep.Buffer.set_num_sms(num_sms)
 
     hidden_bytes = get_hidden_bytes(args)
     num_nvl_bytes, num_rdma_bytes, num_rdma_bytes_norm = 0, 0, 0
@@ -292,7 +299,7 @@ def test_loop(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
             break
         
         if local_rank == 0:
-            print(f'{ref_hash=}')
+            print(f'ref_hash={ref_hash}')
             print('', flush=True)
 
         for j in range(20):

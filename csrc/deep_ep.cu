@@ -937,6 +937,7 @@ Buffer::internode_dispatch(const torch::Tensor &x, const std::optional<torch::Te
         gbl_channel_prefix_matrix  = cached_gbl_channel_prefix_matrix.value();
         recv_gbl_rank_prefix_sum   = cached_recv_gbl_rank_prefix_sum.value();
 
+        EP_HOST_ASSERT(num_rdma_bytes >= config.get_rdma_buffer_size_hint(hidden_int4 * sizeof(int4), num_ranks));
         // Just a barrier and clean flags
         internode::cached_notify(
             hidden_int4, num_scales, num_topk, num_topk, num_ranks, num_channels, 0, nullptr,
@@ -1205,6 +1206,7 @@ Buffer::internode_combine(
     EP_HOST_ASSERT(config.num_max_nvl_chunked_recv_tokens % num_rdma_ranks == 0);
     EP_HOST_ASSERT(config.num_max_nvl_chunked_send_tokens <=
                        config.num_max_nvl_chunked_recv_tokens / num_rdma_ranks);
+    EP_HOST_ASSERT(num_rdma_bytes >= config.get_rdma_buffer_size_hint(hidden_int4 * sizeof(int4), num_ranks));
 
     // Launch barrier and reset queue head and tail
     internode::cached_notify(

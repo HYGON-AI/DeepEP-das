@@ -207,7 +207,8 @@ class Buffer:
             new_num_sms: the new number to be set.
         """
 
-        assert new_num_sms % 2 == 0, "The SM count must be even"
+        assert new_num_sms % 2 == 0, "The SM count must be new_num_sms % 2 == 0"
+        assert new_num_sms % 3 == 0, "The SM count must be new_num_sms % 3 == 0"
         Buffer.num_sms = new_num_sms
 
     @staticmethod
