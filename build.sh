@@ -30,6 +30,7 @@ PYTHON_PLATLIB=$(python3 -c "from sysconfig import get_paths; print(get_paths()[
 
 USE_NVSHMEM=OFF
 USE_ROCSHMEM=OFF
+BUILD_SHCA=OFF
 ROCM_DISABLE_CTX=OFF
 ROCM_DISABLE_MULTIQP=OFF
 # 解析命令行参数
@@ -40,6 +41,9 @@ for arg in "$@"; do
             ;;
         nvshmem|dushmem)
             USE_NVSHMEM=ON
+            ;;
+        BUILD_SHCA=ON)
+            BUILD_SHCA=ON
             ;;
         ROCM_DISABLE_CTX=ON)
             ROCM_DISABLE_CTX=ON
@@ -106,6 +110,7 @@ echo "Current $DETECTED_ARCH"
 
 echo "USE_NVSHMEM=$USE_NVSHMEM"
 echo "USE_ROCSHMEM=$USE_ROCSHMEM"
+echo "BUILD_SHCA=$BUILD_SHCA"
 echo "ROCM_DISABLE_CTX=$ROCM_DISABLE_CTX"
 echo "ROCM_DISABLE_MULTIQP=$ROCM_DISABLE_MULTIQP"
 
@@ -113,6 +118,9 @@ echo "ROCM_DISABLE_MULTIQP=$ROCM_DISABLE_MULTIQP"
 build_rocshmem()
 {
     cd third-party/rocshmem/
+    if [ "$BUILD_SHCA" == "ON" ]; then
+        git checkout 1aab2cf87fe602b6ad62d93b054025fd1afa57bc
+    fi
     if [ ! -d "build" ]; then
         mkdir -p build
     fi
@@ -122,8 +130,13 @@ build_rocshmem()
         return 1
     }
     echo "cd third-party/rocshmem/build"
-    bash ../scripts/build_configs/gda_mlx5
-    echo "编译rocshmem成功"
+    if [ "$BUILD_SHCA" == "ON" ]; then
+        bash ../scripts/build_configs/gda_shca
+        echo "编译SHCA rocshmem 成功"
+    else
+        bash ../scripts/build_configs/gda_mlx5
+        echo "编译MLX rocshmem 成功"
+    fi
     cd "$src_path"
 }
 
@@ -240,7 +253,11 @@ fi
 
 if [[ "$need_link" == true ]]; then
     echo "Linking -> $OUTPUT"
-    hipcc -Wno-unused-result -Wsign-compare -DNDEBUG -g -fwrapv -O2 -Wall -g -fstack-protector-strong -Wformat -Werror=format-security -g -fwrapv -O2 -shared -Wl,-O1 -Wl,-Bsymbolic-functions "${OBJECTS[@]}" -L${SHMEM_INSTALL_PREFIX}/lib/ -L/opt/mpi/lib -L/opt/dtk/hip/lib -L/usr/lib/x86_64-linux-gnu -lhipblaslt -lamdhip64 -o "$OUTPUT" -Wl,-rpath,/opt/dtk/lib -fgpu-rdc --hip-link ${DETECTED_ARCH} -shared -Wl,-soname,"$(basename "$OUTPUT")" -L"${llvm_path}/include/../lib/linux" -lclang_rt.builtins-x86_64 /opt/dtk/hip/lib/libgalaxyhip.so ${llvm_path}/lib/linux/libclang_rt.builtins-x86_64.a /opt/hyhal/lib/libhsa-runtime64.so -L${PYTHON_PLATLIB}/torch/lib -L/opt/dtk/lib -L/opt/dtk/hip/lib -L/usr/local/lib -lc10 -ltorch -ltorch_cpu -ltorch_python -lamdhip64 -lc10_hip -ltorch_hip -lrocm-core -lrocm_smi64 ${SHMEM_LINK_OPTIONS} -fgpu-rdc --hip-link -lamdhip64 -lhsa-runtime64 -l:libmpi.so -Wl,-rpath,/opt/mpi/lib/ -libverbs -lmlx5
+    if [ "$BUILD_SHCA" == "ON" ]; then
+        hipcc -Wno-unused-result -Wsign-compare -DNDEBUG -g -fwrapv -O2 -Wall -g -fstack-protector-strong -Wformat -Werror=format-security -g -fwrapv -O2 -shared -Wl,-O1 -Wl,-Bsymbolic-functions "${OBJECTS[@]}" -L${SHMEM_INSTALL_PREFIX}/lib/ -L/opt/mpi/lib -L/opt/dtk/hip/lib -L/usr/lib/x86_64-linux-gnu -lhipblaslt -lamdhip64 -o "$OUTPUT" -Wl,-rpath,/opt/dtk/lib -fgpu-rdc --hip-link ${DETECTED_ARCH} -shared -Wl,-soname,"$(basename "$OUTPUT")" -L"${llvm_path}/include/../lib/linux" -lclang_rt.builtins-x86_64 /opt/dtk/hip/lib/libgalaxyhip.so ${llvm_path}/lib/linux/libclang_rt.builtins-x86_64.a /opt/hyhal/lib/libhsa-runtime64.so -L${PYTHON_PLATLIB}/torch/lib -L/opt/dtk/lib -L/opt/dtk/hip/lib -L/usr/local/lib -lc10 -ltorch -ltorch_cpu -ltorch_python -lamdhip64 -lc10_hip -ltorch_hip -lrocm-core -lrocm_smi64 ${SHMEM_LINK_OPTIONS} -fgpu-rdc --hip-link -lamdhip64 -lhsa-runtime64 -l:libmpi.so -Wl,-rpath,/opt/mpi/lib/ -libverbs -lshca
+    else
+        hipcc -Wno-unused-result -Wsign-compare -DNDEBUG -g -fwrapv -O2 -Wall -g -fstack-protector-strong -Wformat -Werror=format-security -g -fwrapv -O2 -shared -Wl,-O1 -Wl,-Bsymbolic-functions "${OBJECTS[@]}" -L${SHMEM_INSTALL_PREFIX}/lib/ -L/opt/mpi/lib -L/opt/dtk/hip/lib -L/usr/lib/x86_64-linux-gnu -lhipblaslt -lamdhip64 -o "$OUTPUT" -Wl,-rpath,/opt/dtk/lib -fgpu-rdc --hip-link ${DETECTED_ARCH} -shared -Wl,-soname,"$(basename "$OUTPUT")" -L"${llvm_path}/include/../lib/linux" -lclang_rt.builtins-x86_64 /opt/dtk/hip/lib/libgalaxyhip.so ${llvm_path}/lib/linux/libclang_rt.builtins-x86_64.a /opt/hyhal/lib/libhsa-runtime64.so -L${PYTHON_PLATLIB}/torch/lib -L/opt/dtk/lib -L/opt/dtk/hip/lib -L/usr/local/lib -lc10 -ltorch -ltorch_cpu -ltorch_python -lamdhip64 -lc10_hip -ltorch_hip -lrocm-core -lrocm_smi64 ${SHMEM_LINK_OPTIONS} -fgpu-rdc --hip-link -lamdhip64 -lhsa-runtime64 -l:libmpi.so -Wl,-rpath,/opt/mpi/lib/ -libverbs -lmlx5
+    fi
     echo "Successfully built $OUTPUT"
 else
     echo "Skipping linking ($OUTPUT is up to date)"
