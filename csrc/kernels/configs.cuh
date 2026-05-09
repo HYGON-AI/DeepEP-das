@@ -13,8 +13,8 @@
 
 #define FINISHED_SUM_TAG 1024
 
-#define NUM_CPU_TIMEOUT_SECS 2000
-#define NUM_TIMEOUT_CYCLES 3000000000000ll // 200G cycles ~= 100s
+#define NUM_CPU_TIMEOUT_SECS 1000
+#define NUM_TIMEOUT_CYCLES 6000000000000ll // 200G cycles ~= 100s
 
 #define NUM_WAIT_NANOSECONDS 500
 
@@ -68,3 +68,18 @@ template <typename T> inline __host__ __device__ T ALIGN(T a, T b) {
 #ifdef __HIP_NO_HALF_OPERATORS__
 #undef __HIP_NO_HALF_OPERATORS__
 #endif
+
+static inline int get_num_cpu_timeout_secs() {
+    static int timeout = []() {
+        const char *env = std::getenv("DEEPEP_CPU_TIMEOUT_SECS");
+        if (!env || env[0] == '\0') {
+            return NUM_CPU_TIMEOUT_SECS;
+        }
+        try {
+            return std::stoi(env);
+        } catch (...) {
+            return NUM_CPU_TIMEOUT_SECS;
+        }
+    }();
+    return timeout;
+}
