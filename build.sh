@@ -118,6 +118,7 @@ echo "ROCM_DISABLE_MULTIQP=$ROCM_DISABLE_MULTIQP"
 build_rocshmem()
 {
     cd third-party/rocshmem/
+    git config --global --add safe.directory .
     if [ "$BUILD_SHCA" == "ON" ]; then
         git checkout 1aab2cf87fe602b6ad62d93b054025fd1afa57bc
     fi
