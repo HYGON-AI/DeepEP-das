@@ -5,6 +5,7 @@ import subprocess
 import sysconfig
 from typing import Optional
 import subprocess
+from setuptools import Distribution
 
 import torch
 
@@ -105,6 +106,10 @@ def get_deepep_version() -> str:
     version = get_version()
     return version
 
+class BinaryDistribution(Distribution):
+    def has_ext_modules(self):
+        return True
+
 if __name__ == '__main__':
     setuptools.setup(
         name='deep_ep',
@@ -113,4 +118,5 @@ if __name__ == '__main__':
         include_package_data=True,
         package_data={"deep_ep": [f"deep_ep_cpp{sysconfig.get_config_var('EXT_SUFFIX')}"]},
         zip_safe=False,
+        distclass=BinaryDistribution,
     )
