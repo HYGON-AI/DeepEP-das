@@ -47,7 +47,7 @@ struct Config {
         EP_HOST_ASSERT(num_ranks <= NUM_MAX_NVL_PEERS or num_sms % (2 * NUM_INTERNODE_DISPATCH_BLOCKS_PER_CHANNEL) == 0);
         const auto num_rdma_ranks = std::max(num_ranks / NUM_MAX_NVL_PEERS, 1);
         const auto num_nvl_ranks  = std::min(num_ranks, NUM_MAX_NVL_PEERS);
-        const int  num_channels   = num_sms / NUM_INTERNODE_DISPATCH_BLOCKS_PER_CHANNEL;
+        const int  num_channels   = num_ranks <=8 ? num_sms / 2 : num_sms / NUM_INTERNODE_DISPATCH_BLOCKS_PER_CHANNEL;
 
         // 计算每个nvl通信数据包的数据量
         size_t num_single_nvl_bag_bytes =
