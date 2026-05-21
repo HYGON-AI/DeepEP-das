@@ -809,8 +809,8 @@ Buffer::internode_dispatch(const torch::Tensor &x, const std::optional<torch::Te
     // here.
     pybind11::gil_scoped_release release;
 
-    const int num_channels = config.num_sms / NUM_INTERNODE_DISPATCH_BLOCKS_PER_CHANNEL;
-    EP_HOST_ASSERT(config.num_sms % NUM_INTERNODE_DISPATCH_BLOCKS_PER_CHANNEL == 0);
+    const int num_channels = config.num_sms / 2;
+    // EP_HOST_ASSERT(config.num_sms % NUM_INTERNODE_DISPATCH_BLOCKS_PER_CHANNEL == 0);
     EP_HOST_ASSERT(0 < get_num_rdma_ranks() and get_num_rdma_ranks() <= NUM_MAX_RDMA_PEERS);
 
     bool cached_mode = cached_rdma_channel_prefix_matrix.has_value();
@@ -1130,8 +1130,8 @@ Buffer::internode_combine(
     const torch::Tensor &combined_nvl_head, const Config &config,
     std::optional<EventHandle> &previous_event, bool async, bool allocate_on_comm_stream) {
 #ifndef DISABLE_ROCSHMEM
-    const int num_channels = config.num_sms / NUM_INTERNODE_DISPATCH_BLOCKS_PER_CHANNEL;
-    EP_HOST_ASSERT(config.num_sms % NUM_INTERNODE_DISPATCH_BLOCKS_PER_CHANNEL == 0);
+    const int num_channels = config.num_sms / 2;
+    // EP_HOST_ASSERT(config.num_sms % NUM_INTERNODE_DISPATCH_BLOCKS_PER_CHANNEL == 0);
 
     // Shape and contiguous checks
     EP_HOST_ASSERT(x.dim() == 2 and x.is_contiguous());
