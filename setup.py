@@ -15,6 +15,7 @@ if int(os.environ.get('ADD_GIT_VERSION', '0')) == 1:
     add_git_version = True
 
 shmem = None
+build_shca = False
 other = []
 for arg in sys.argv:
     if arg.startswith("--shmem="):
@@ -23,6 +24,8 @@ for arg in sys.argv:
             shmem = "a"
         elif shmem == "nv":
             shmem = "b"
+    elif arg == "--build_shca":
+        build_shca = True
     else:
         other.append(arg)
 sys.argv = other
@@ -112,7 +115,7 @@ class BinaryDistribution(Distribution):
 
 if __name__ == '__main__':
     setuptools.setup(
-        name='deep_ep',
+        name='deep_ep_shca' if build_shca else 'deep_ep',
         version=get_deepep_version(),
         packages=setuptools.find_packages(include=['deep_ep']),
         include_package_data=True,

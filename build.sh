@@ -268,10 +268,18 @@ fi
 echo "Using Python: $(which python3)"
 python3 --version
 if [ "$USE_NVSHMEM" == "ON" ]; then
-    python setup.py bdist_wheel --shmem=nv
+    if [ "$BUILD_SHCA" == "ON" ]; then
+        python setup.py bdist_wheel --shmem=nv --build_shca
+    else
+        python setup.py bdist_wheel --shmem=nv
+    fi
 fi
 if [ "$USE_ROCSHMEM" == "ON" ]; then
-    python setup.py bdist_wheel --shmem=rocm
+    if [ "$BUILD_SHCA" == "ON" ]; then
+        python setup.py bdist_wheel --shmem=rocm --build_shca
+    else
+        python setup.py bdist_wheel --shmem=rocm
+    fi
 fi
 echo "✅ Build complete:"
 ls -lh dist/
