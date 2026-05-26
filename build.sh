@@ -76,20 +76,44 @@ detect_offload_arch() {
     # 转换为整数，以便比较（如 936）
     current_gfx_int=$((current_gfx))
 
-    # 获取所有支持的 gfx 版本
+    # 获取所有支持的 gfx 版本（降序排列）
     if command -v rocm_agent_enumerator >/dev/null 2>&1; then
         supported_archs=$(rocm_agent_enumerator 2>/dev/null | grep -E '^gfx[0-9]+' | sort -r)
         if [ -n "$supported_archs" ]; then
-            # 过滤出大于或等于当前硬件版本的架构
-            filtered_archs=""
+            # 取前2个最大的架构作为基础
+            top2=""
+            count=0
             for arch in $supported_archs; do
-                arch_int=${arch:3}  # 字符串切片语法，提取版本号（如 940）
-                if [ "$arch_int" -ge "$current_gfx_int" ]; then
-                    filtered_archs="$filtered_archs --offload-arch=$arch"
+                top2="$top2 --offload-arch=$arch"
+                count=$((count + 1))
+                [ $count -ge 2 ] && break
+            done
+
+            # 检查当前 GPU 是否已经在前2个中
+            found=0
+            for arch in $supported_archs; do
+                arch_int=${arch:3}
+                if [ "$arch_int" -eq "$current_gfx_int" ]; then
+                    count2=0
+                    for a in $supported_archs; do
+                        count2=$((count2 + 1))
+                        [ $count2 -gt 2 ] && break
+                        a_int=${a:3}
+                        if [ "$a_int" -eq "$current_gfx_int" ]; then
+                            found=1
+                            break
+                        fi
+                    done
+                    break
                 fi
             done
 
-            echo "$filtered_archs"
+            # 如果当前 GPU 不在前2个中，追加它
+            if [ "$found" -eq 0 ]; then
+                top2="$top2 --offload-arch=gfx${current_gfx_int}"
+            fi
+
+            echo "$top2"
             return 0
         fi
     fi
