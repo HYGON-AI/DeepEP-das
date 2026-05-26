@@ -855,7 +855,7 @@ combine(void* combined_x,
         syncwarp();
         while (sync_large_warp_counters[warp_group_id] < num_warps_per_group);
 
-        if (sub_warp_id == 1 and lane_id == 0) {
+        if (sub_warp_id == 0 and lane_id == 0) {
             while (ld_acquire_global(atomic_clean_flag) == 0);
 
             auto dst_ptr = rdma_recv_flag + global_expert_idx;
