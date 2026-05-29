@@ -122,9 +122,8 @@ class Buffer:
 
             self.gda_num_qps_per_pe = max(int(os.environ.get('ROCSHMEM_GDA_NUM_QPS_PER_PE_DEFAULT_CTX', str(num_qps_per_rank))), num_qps_per_rank * self.group_size)
             os.environ["ROCSHMEM_GDA_NUM_QPS_DEFAULT_CTX"] = str(self.gda_num_qps_per_pe)
-            if self.num_rdma_bytes > 1073741824:
-                multiple = 2147483648
-                rocshmem_num_rdma_bytes = ((self.num_rdma_bytes + multiple - 1) // multiple) * multiple
+            if self.num_rdma_bytes > (1 << 30):
+                rocshmem_num_rdma_bytes = ((self.num_rdma_bytes + (1 << 31) - 1) // (1 << 31)) * (1 << 31)
                 os.environ["ROCSHMEM_HEAP_SIZE"] = str(rocshmem_num_rdma_bytes)
             if self.group_size <= 8:
                 os.environ["ROCSHMEM_BACKEND"] = "ipc"
