@@ -144,7 +144,7 @@ build_rocshmem()
     cd third-party/rocshmem/
     git config --global --add safe.directory .
     if [ "$BUILD_SHCA" == "ON" ]; then
-        git checkout 1aab2cf87fe602b6ad62d93b054025fd1afa57bc
+        git checkout 0a05c14ebd47034ed049afb7b896536fcd91a9a7
     fi
     if [ ! -d "build" ]; then
         mkdir -p build
