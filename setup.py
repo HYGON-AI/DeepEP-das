@@ -113,7 +113,7 @@ class BinaryDistribution(Distribution):
     def has_ext_modules(self):
         return True
 
-version_suffix = '+shca' if build_shca else ''
+version_suffix = '.shca' if build_shca else ''
 
 if __name__ == '__main__':
     setuptools.setup(
