@@ -120,7 +120,7 @@ class Buffer:
             os.environ["DUSHMEM_MAX_TEAMS"] = "7"
             os.environ["DUSHMEM_DISABLE_NVLS"] = "1"
 
-            self.gda_num_qps_per_pe = max(int(os.environ.get('ROCSHMEM_GDA_NUM_QPS_PER_PE_DEFAULT_CTX', str(num_qps_per_rank))), num_qps_per_rank)
+            self.gda_num_qps_per_pe = max(int(os.environ.get('ROCSHMEM_GDA_NUM_QPS_PER_PE_DEFAULT_CTX', str(num_qps_per_rank))), num_qps_per_rank * self.group_size)
             os.environ["ROCSHMEM_GDA_NUM_QPS_DEFAULT_CTX"] = str(self.gda_num_qps_per_pe)
             if self.num_rdma_bytes > 1073741824:
                 multiple = 2147483648
