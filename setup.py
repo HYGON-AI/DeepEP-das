@@ -113,10 +113,12 @@ class BinaryDistribution(Distribution):
     def has_ext_modules(self):
         return True
 
+version_suffix = '+shca' if build_shca else ''
+
 if __name__ == '__main__':
     setuptools.setup(
-        name='deep_ep_shca' if build_shca else 'deep_ep',
-        version=get_deepep_version(),
+        name='deep_ep',
+        version=get_deepep_version() + version_suffix,
         packages=setuptools.find_packages(include=['deep_ep']),
         include_package_data=True,
         package_data={"deep_ep": [f"deep_ep_cpp{sysconfig.get_config_var('EXT_SUFFIX')}"]},
