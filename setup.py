@@ -56,9 +56,9 @@ def get_version_add(sha: Optional[str] = None) -> str:
 
     new_version_content = f"""
 try:
-    __version__ = "1.0.0"
-    __version_tuple__ = (1, 0, 0)
-    __hcu_version__ = f'1.0.0+{version}'
+    __version__ = "1.1.0"
+    __version_tuple__ = (1, 1, 0)
+    __hcu_version__ = f'1.1.0+{version}'
 
     from deep_ep.version import __version__, __version_tuple__, __hcu_version__
 except Exception as e:

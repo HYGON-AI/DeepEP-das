@@ -59,75 +59,20 @@ for arg in "$@"; do
 done
 
 detect_offload_arch() {
-    # 获取当前硬件的 gfx 版本（例如 gfx936）
-    current_gfx=$(rocminfo 2>/dev/null | grep -E 'Name:.*gfx[0-9]+' | head -n1 | grep -oE 'gfx[0-9]+' | cut -c4-)
-    if [ -z "$current_gfx" ]; then
-        # 如果无法获取当前硬件版本，回退到原逻辑（选择最大的架构）
-        if command -v rocm_agent_enumerator >/dev/null 2>&1; then
-            arch=$(rocm_agent_enumerator 2>/dev/null | grep -E '^gfx[0-9]+' | sort -r | head -n1)
-            if [ -n "$arch" ]; then
-                echo "--offload-arch=$arch"
-                return 0
-            fi
-        fi
+    if ! command -v rocm_agent_enumerator >/dev/null 2>&1; then
         return 1
     fi
 
-    # 转换为整数，以便比较（如 936）
-    current_gfx_int=$((current_gfx))
+    supported_archs=$(rocm_agent_enumerator 2>/dev/null | grep -E '^gfx[0-9]+' | sort -r)
+    [ -z "$supported_archs" ] && return 1
 
-    # 获取所有支持的 gfx 版本（降序排列）
-    if command -v rocm_agent_enumerator >/dev/null 2>&1; then
-        supported_archs=$(rocm_agent_enumerator 2>/dev/null | grep -E '^gfx[0-9]+' | sort -r)
-        if [ -n "$supported_archs" ]; then
-            # 取前2个最大的架构作为基础
-            top2=""
-            count=0
-            for arch in $supported_archs; do
-                top2="$top2 --offload-arch=$arch"
-                count=$((count + 1))
-                [ $count -ge 2 ] && break
-            done
+    top2_gfx=$(echo "$supported_archs" | head -n2 | sed 's/^/--offload-arch=/' | tr '\n' ' ')
+    current_gfx=$(rocminfo 2>/dev/null | grep -Eo 'gfx[0-9]+' | head -n1)
 
-            # 检查当前 GPU 是否已经在前2个中
-            found=0
-            for arch in $supported_archs; do
-                arch_int=${arch:3}
-                if [ "$arch_int" -eq "$current_gfx_int" ]; then
-                    count2=0
-                    for a in $supported_archs; do
-                        count2=$((count2 + 1))
-                        [ $count2 -gt 2 ] && break
-                        a_int=${a:3}
-                        if [ "$a_int" -eq "$current_gfx_int" ]; then
-                            found=1
-                            break
-                        fi
-                    done
-                    break
-                fi
-            done
-
-            # 如果当前 GPU 不在前2个中，追加它
-            if [ "$found" -eq 0 ]; then
-                top2="$top2 --offload-arch=gfx${current_gfx_int}"
-            fi
-
-            echo "$top2"
-            return 0
-        fi
+    if [ -n "$current_gfx" ] && ! echo "$top2_gfx" | grep -q "$current_gfx"; then
+        top2_gfx="$top2_gfx --offload-arch=$current_gfx"
     fi
-
-    # 回退逻辑：如果没有匹配的架构，选择最大的架构
-    if command -v rocm_agent_enumerator >/dev/null 2>&1; then
-        arch=$(rocm_agent_enumerator 2>/dev/null | grep -E '^gfx[0-9]+' | sort -r | head -n1)
-        if [ -n "$arch" ]; then
-            echo "--offload-arch=$arch"
-            return 0
-        fi
-    fi
-
-    return 1
+    echo "$top2_gfx"
 }
 DETECTED_ARCH=$(detect_offload_arch)
 echo "Current $DETECTED_ARCH"
