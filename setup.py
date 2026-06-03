@@ -40,10 +40,10 @@ def get_version_add(sha: Optional[str] = None) -> str:
         if sha != 'Unknown':
             if sha is None:
                 sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=deepep_root).decode('ascii').strip()
-            if (major, minor) >= ('2', '4'):
+            if (major, minor) >= ('2', '1'):
                 version = 'das.opt1.' + sha[:7] + shmem
     else:
-        if (major, minor) >= ('2', '4'):
+        if (major, minor) >= ('2', '1'):
             version = 'das.opt1'
 
     if os.getenv("ROCM_PATH"):
