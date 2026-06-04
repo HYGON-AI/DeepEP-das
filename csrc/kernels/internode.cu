@@ -1285,7 +1285,7 @@ void cached_notify(int hidden_int4, int num_scales, int num_topk_idx, int num_to
                    int num_max_nvl_chunked_recv_tokens, int **barrier_signal_ptrs, int rank,
                    hipStream_t stream, int64_t num_rdma_bytes, int64_t num_nvl_bytes,
                    bool is_cached_dispatch, bool low_latency_mode) {
-    const int  num_threads    = ::max(128, kWarpSize * num_channels);
+    const int  num_threads    = ::min(1024, ::max(128, kWarpSize * num_channels));
     const auto num_rdma_ranks = num_ranks / NUM_MAX_NVL_PEERS;
 
     // Get clean meta
