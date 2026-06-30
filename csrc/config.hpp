@@ -50,7 +50,7 @@ struct Config {
         EP_HOST_ASSERT(num_ranks <= NUM_MAX_NVL_PEERS or num_sms % (2 * NUM_INTERNODE_DISPATCH_BLOCKS_PER_CHANNEL) == 0);
         const auto num_rdma_ranks = std::max(num_ranks / NUM_MAX_NVL_PEERS, 1);
         const auto num_nvl_ranks  = std::min(num_ranks, NUM_MAX_NVL_PEERS);
-        const int  num_channels   = num_sms / 2;
+        const int  num_channels   = num_ranks <= NUM_MAX_NVL_PEERS ? num_sms / 2 : num_sms / NUM_INTERNODE_DISPATCH_BLOCKS_PER_CHANNEL;
 
         size_t num_single_nvl_bag_bytes =
             hidden_bytes +
@@ -82,7 +82,7 @@ struct Config {
         EP_HOST_ASSERT(num_ranks % NUM_MAX_NVL_PEERS == 0);
         EP_HOST_ASSERT(num_sms % NUM_INTERNODE_DISPATCH_BLOCKS_PER_CHANNEL == 0);
         const int num_rdma_ranks = num_ranks / NUM_MAX_NVL_PEERS;
-        const int num_channels   = num_sms / 2;
+        const int num_channels   = num_sms / NUM_INTERNODE_DISPATCH_BLOCKS_PER_CHANNEL;
 
         size_t num_single_rdma_bag_bytes = 
             hidden_bytes +
