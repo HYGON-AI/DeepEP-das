@@ -1,4 +1,6 @@
 #!/bin/bash
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: MIT
 
 # wz
 export HIP_VISIBLE_DEVICES=0,1,2,3,4,5,6,7

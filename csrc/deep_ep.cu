@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+// SPDX-License-Identifier: MIT
+
 #include <ATen/dtk_macros.h>
 #include <ATen/hip/HIPContext.h>
 #include <ATen/hip/HIPDataType.h>

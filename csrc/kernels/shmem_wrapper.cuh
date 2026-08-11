@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+// SPDX-License-Identifier: MIT
+
 #pragma once
 /*
  * Temporary wrapper for for platform specific DUSHMEM and rocSHMEM functions.

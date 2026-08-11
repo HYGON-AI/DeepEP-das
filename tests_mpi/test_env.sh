@@ -1,4 +1,7 @@
 #!/bin/bash
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: MIT
+
 # =============================================================================
 # DeepEP + RCCL/NCCL 环境配置
 # 适用于: mpirun 启动的多节点训练
