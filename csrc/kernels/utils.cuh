@@ -377,7 +377,6 @@ __device__ __forceinline__ dtype_t broadcast(dtype_t &ptr, int src_lane_idx) {
     return *reinterpret_cast<dtype_t *>(recv_int_values);
 }
 
-// 设置不同的量化方式的最大值与相反数
 constexpr float kFinfoAmaxE4M3 = 448.0f;
 constexpr float kFinfoAmaxInvE4M3 = 1.0f / kFinfoAmaxE4M3;
 constexpr float kFinfoAmaxE5M2 = 57344.0f; 
@@ -401,10 +400,10 @@ __forceinline__ __device__ int fast_log2_ceil(float x) {
 template <int kQuantType>
 __forceinline__ __device__ void calculate_quant8bit_scales(float amax, float& scale, float& scale_inv, bool round_scale=0) {
     amax = fmaxf(amax, 1e-6f);
-    if constexpr(kQuantType == 1) { // 使用 INT8 对称量化
+    if constexpr(kQuantType == 1) {
         scale_inv = kFinfoAmaxInvInt8 * amax;
         scale = kFinfoAmaxInt8 / amax;
-    } else if constexpr(kQuantType == 2 || kQuantType == 3) {   // 使用 FP8_E4M3 或 FP8_UE8M0 非对称量化
+    } else if constexpr(kQuantType == 2 || kQuantType == 3) {
         if (round_scale) {
             auto exp_scale_inv = fast_log2_ceil(amax * kFinfoAmaxInvE4M3);
             scale = fast_pow2(-exp_scale_inv);
@@ -413,7 +412,7 @@ __forceinline__ __device__ void calculate_quant8bit_scales(float amax, float& sc
             scale_inv = amax * kFinfoAmaxInvE4M3;
             scale = kFinfoAmaxE4M3 / amax;
         }
-    } else if constexpr(kQuantType == 4) { // 使用 FP8_E5M2 对称量化
+    } else if constexpr(kQuantType == 4) {
         if (round_scale) {
             auto exp_scale_inv = fast_log2_ceil(amax * kFinfoAmaxInvE5M2);
             scale = fast_pow2(-exp_scale_inv);

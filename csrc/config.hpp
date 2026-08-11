@@ -49,23 +49,19 @@ struct Config {
         const auto num_nvl_ranks  = std::min(num_ranks, NUM_MAX_NVL_PEERS);
         const int  num_channels   = num_sms / 2;
 
-        // 计算每个nvl通信数据包的数据量
         size_t num_single_nvl_bag_bytes =
-            hidden_bytes +                          // 数据缓冲区（Token Data）。存储从 RDMA 转发过来的 token 数据（x 张量）
+            hidden_bytes +
 #ifndef DISABLE_ROCSHMEM
-            internode::get_source_meta_bytes() +    // 源元数据缓冲区（Source Metadata）。存储每个 token 的源信息（哪个 RDMA rank 发送的）
+            internode::get_source_meta_bytes() +
 #endif
-            kNumMaxTopK * sizeof(int) +             // TopK 索引缓冲区。存储每个 token 的 top-k 专家索引
-            kNumMaxTopK * sizeof(float) +           // TopK 权重缓冲区。存储每个 token 的 top-k 专家权重
-            kNumMaxScales * sizeof(float);          // Scale 缓冲区。存储每个 token 的量化缩放因子
+            kNumMaxTopK * sizeof(int) +
+            kNumMaxTopK * sizeof(float) +
+            kNumMaxScales * sizeof(float);
 
-        // 计算每个 NVL channel 的控制信息所需的字节数，存储每个 NVL channel 的前缀索引信息，用于快速定位数据（nvl_channel_prefix_start、nvl_channel_prefix_end 等）
         size_t num_single_nvl_control_bytes = (2 * num_rdma_ranks + 3) * sizeof(int);
 
-        // NVL 数据总的字节数
         size_t num_bytes = (num_single_nvl_bag_bytes * num_max_nvl_chunked_recv_tokens + num_single_nvl_control_bytes) * num_channels * num_nvl_ranks;
 
-        // 128 字节对齐，匹配 GPU 缓存行大小，优化内存访问。
         num_bytes = ((num_bytes + 127) / 128) * 128;
         return num_bytes;
     }
@@ -85,23 +81,19 @@ struct Config {
         const int num_rdma_ranks = num_ranks / NUM_MAX_NVL_PEERS;
         const int num_channels   = num_sms / 2;
 
-        // 计算每个rdma通信数据包的数据量
         size_t num_single_rdma_bag_bytes = 
-            hidden_bytes +                          // 数据缓冲区。存储实际的 token 数据（x 张量），对应代码中的 rdma_channel_data
-            internode::get_source_meta_bytes() +    // 源元数据缓冲区。存储每个 token 的源信息（SourceMeta）
-            kNumMaxTopK * sizeof(int) +             // 存储每个 token 的 top-k 专家索引。对应 topk_idx 数据
-            kNumMaxTopK * sizeof(float) +           // 存储每个 token 的 top-k 专家权重。对应 topk_weights 数据
-            kNumMaxScales * sizeof(float) +         // 存储每个 token 的缩放因子（x_scales）
-            sizeof(int4);                           // 预留空间用于内存对齐和未来扩展
+            hidden_bytes +
+            internode::get_source_meta_bytes() +
+            kNumMaxTopK * sizeof(int) +
+            kNumMaxTopK * sizeof(float) +
+            kNumMaxScales * sizeof(float) +
+            sizeof(int4);
         
-        // 计算每个 RDMA channel 的控制信息（起始/结束索引）所需的字节数，对应代码中的 rdma_channel_meta
         size_t num_single_rdma_control_bytes = (NUM_MAX_NVL_PEERS * 2 + 4) * sizeof(int);
 
-        // RDMA 数据总的字节数
         size_t num_bytes = (num_single_rdma_bag_bytes * num_max_rdma_chunked_recv_tokens + num_single_rdma_control_bytes) *
             num_channels * num_rdma_ranks * 2;
 
-        // 128 字节对齐（缓存行对齐），优化内存访问性能
         num_bytes = ((num_bytes + 127) / 128) * 128;
         return num_bytes;
 #else
@@ -145,7 +137,7 @@ struct LowLatencyLayout {
                      int num_ranks, int num_experts, bool enable_dispatch_ll_layered=false, int quant_group_size=0) {
         const int num_scales = hidden / QUANTIZATION_GROUPSIZE;
 
-        const int num_nodes = num_ranks / NUM_MAX_NVL_PEERS;  // 计算结点数
+        const int num_nodes = num_ranks / NUM_MAX_NVL_PEERS;
 
         // Dispatch and combine layout:
         //  - 2 symmetric odd/even send buffer
@@ -158,11 +150,10 @@ struct LowLatencyLayout {
         EP_HOST_ASSERT(num_scales * sizeof(float) <= static_cast<size_t>(hidden));
         size_t num_bytes_per_dispatch_msg =
             sizeof(int4) + std::max(hidden * sizeof(hip_bfloat16), hidden +
-            (quant_group_size == 0 ? 4 : num_scales) * sizeof(float));   // 应该是1，但是代码中为了满足int4对齐
+            (quant_group_size == 0 ? 4 : num_scales) * sizeof(float));
 
-        // 与internode_ll::combine 中的 num_bytes_per_slot 相等
         size_t num_bytes_per_combine_msg = hidden * sizeof(hip_bfloat16) + 
-                                           (enable_dispatch_ll_layered ? 0 : // 即enable_combine_overlap==true，执行函数combine_sbo
+                                           (enable_dispatch_ll_layered ? 0 :
                                            num_scales * sizeof(__hip_bfloat162));
 
         // Send buffer

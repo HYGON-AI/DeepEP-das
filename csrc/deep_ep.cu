@@ -1365,18 +1365,16 @@ Buffer::low_latency_dispatch(const torch::Tensor& x, const torch::Tensor& topk_i
         // TODO: support unaligned cases
         EP_HOST_ASSERT(hidden % (QUANTIZATION_GROUPSIZE * 4) == 0);
         
-        // 计算scale_col的大小
-        int scales_col_size = 1;    // 默认为per-channel
+        int scales_col_size = 1;
         if (quant_group_size > 0) {
-            if (quant_type == 3) {  // FP8_UE8M0比较特殊
+            if (quant_type == 3) {
                 scales_col_size = hidden / (QUANTIZATION_GROUPSIZE * 4);
             } else {
                 scales_col_size = hidden / QUANTIZATION_GROUPSIZE;
             }
         }
 
-        // 设置packed_recv_x_scales
-        if (quant_type == 3) {  // FP8_UE8M0比较特殊，需要单独处理
+        if (quant_type == 3) {
             EP_HOST_ASSERT(fp8_round_scale && quant_group_size == 128);
             packed_recv_x_scales = torch::empty({num_local_experts, scales_col_size, num_ranks * num_max_dispatch_tokens_per_rank},
                                                 torch::dtype(torch::kInt).device(torch::kCUDA));
@@ -1480,7 +1478,7 @@ Buffer::low_latency_combine(const torch::Tensor& x, const torch::Tensor& topk_id
                             const std::optional<torch::Tensor>& out) {
     EP_HOST_ASSERT(low_latency_mode);
     // combine overlap checks
-    EP_HOST_ASSERT((!enable_combine_overlap || return_recv_hook) and "Overlap mode requires return_recv_hook=True");  // 启用 overlap 时， 必须 hook = True
+    EP_HOST_ASSERT((!enable_combine_overlap || return_recv_hook) and "Overlap mode requires return_recv_hook=True");
     EP_HOST_ASSERT((!enable_combine_overlap || packed_recv_count.has_value()) && "Overlap mode requires packed_recv_count has value");
     EP_HOST_ASSERT((!enable_combine_overlap || comp_signal.has_value()) && "Overlap mode requires comp_signal has value");
     EP_HOST_ASSERT((!enable_combine_overlap || block_m != -1) && "Overlap mode requires block_m != -1");
@@ -1596,13 +1594,10 @@ Buffer::low_latency_combine(const torch::Tensor& x, const torch::Tensor& topk_id
                 buffer.combine_rdma_send_buffer,
                 x.data_ptr(), topk_idx.data_ptr<int64_t>(), topk_weights.data_ptr<float>(),
                 src_info.data_ptr<int64_t>(), layout_range.data_ptr<int64_t>(),
-                /* ll_layered 新增参数 */
                 !enable_dispatch_ll_layered,
-                /* overlap 新增参数 */
                 packed_recv_count.has_value() ? packed_recv_count->data_ptr<int>() : nullptr,
                 comp_signal.has_value() ? comp_signal->data_ptr<int>() : nullptr,
                 block_m, threshold, num_sms,
-                /* 辅助tensor */
                 global_atomic_counter.data_ptr<int>(),
                 combine_wait_recv_cost_stats.has_value() ? combine_wait_recv_cost_stats->data_ptr<int64_t>() : nullptr,
                 next_clean_meta.first, next_clean_meta.second,

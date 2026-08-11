@@ -181,18 +181,14 @@ void combine_sbo(void* combined_x,
                 void* rdma_recv_x, int64_t* rdma_recv_flag, void* rdma_send_x,
                 const void* x, const int64_t* topk_idx, const float* topk_weights,
                 const int64_t* src_info, const int64_t* layout_range,
-                // Overlap 新增控制参数
                 bool disable_ll_layered,
                 int* packed_recv_count, int* comp_signal,
                 int block_m, int threshold, int num_sms,
-                // 同步与统计参数
                 int* global_atomic_counter,
                 int64_t* combine_wait_recv_cost_stats,
                 int64_t* next_clean, int num_next_clean_int,
-                // 维度与配置参数
                 int num_combined_tokens, int hidden, int num_max_dispatch_tokens_per_rank,
                 int num_topk, int num_experts, int rank, int num_ranks,
-                // 系统资源与执行参数
                 void* workspace, int num_device_sms, hipStream_t stream,
                 int phases, bool zero_copy);
 } // namespace internode_ll
