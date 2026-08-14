@@ -1,6 +1,3 @@
 [submodule "third-party/rocshmem"]
 	path = third-party/rocshmem
-	url = http://42.228.13.241:10068/dcutoolkit/deeplearing/rocshmem.git
-[submodule "third-party/dushmem-hip"]
-	path = third-party/dushmem-hip
-	url = http://42.228.13.241:10068/lijian/dushmem-hip
+	url = https://github.com/HYGON-AI/rocSHMEM-das.git
