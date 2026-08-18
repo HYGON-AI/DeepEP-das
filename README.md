@@ -321,6 +321,12 @@ The current DeepEP implementation uses queues for communication buffers which sa
 
 For better performance on your cluster, we recommend to run all the tests and use the best auto-tuned configuration. The default configurations are optimized on the DeepSeek's internal cluster.
 
+## Upstream and modifications
+
+This repository is based on [DeepEP](https://github.com/deepseek-ai/DeepEP) at upstream commit `da6ca24ef7c2594e058def142adfb8f2e31a7f85`.
+
+Modified by Hygon Information Technology Co., Ltd.
+
 ## License
 
 This code repository is released under [the MIT License](LICENSE), except for codes that reference NVSHMEM (including `csrc/kernels/ibgda_device.cuh` and `third-party/nvshmem.patch`), which are subject to [NVSHMEM SLA](https://docs.nvidia.com/nvshmem/api/sla.html).
