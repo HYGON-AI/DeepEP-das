@@ -1,5 +1,5 @@
 #!/bin/bash
-set -eux
+set -eu
 
 export amd_comgr_DIR=${ROCM_PATH}/lib64/cmake
 llvm15_path=${ROCM_PATH}/llvm/lib/clang/15.0.0
