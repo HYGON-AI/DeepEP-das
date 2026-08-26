@@ -86,7 +86,11 @@ jobs:
         shell: bash
         env:
           HYGON_AI_CI_TOKEN: ${{ secrets.HYGON_AI_CI_TOKEN }}
-        run: bash source/.github/scripts/hcu/ci.sh checkout-rocshmem source
+        run: |
+          set -o pipefail
+          mkdir -p source/ci-logs
+          bash source/.github/scripts/hcu/ci.sh checkout-rocshmem source \
+            2>&1 | tee source/ci-logs/submodule.log
 
       - name: Build and verify wheel
         shell: bash
@@ -104,7 +108,7 @@ jobs:
           name: deepep-${{ matrix.build_variant }}-torch-${{ matrix.torch_version }}-${{ github.sha }}
           path: |
             source/final/*.whl
-            source/ci-logs/build.log
+            source/ci-logs/
           if-no-files-found: warn
           retention-days: 7
 
