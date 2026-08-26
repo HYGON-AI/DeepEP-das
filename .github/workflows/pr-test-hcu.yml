@@ -1,0 +1,193 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: MIT
+---
+
+name: PR Test HCU
+
+on:
+  pull_request_target:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag, or commit to test
+        required: true
+        default: main
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deepep-pr-hcu-${{ github.event.pull_request.number || inputs.ref || github.ref }}
+  cancel-in-progress: true
+
+env:
+  PIP_INDEX_URL: http://10.16.1.201:9929/nightly/dtk2604/+simple/
+  PIP_TRUSTED_HOST: 10.16.1.201
+  CISMI_TIMEOUT: "3600"
+  CI: "false"
+  FREE_BUILD_DIR: "0"
+
+jobs:
+  authorize:
+    name: Authorize PR source
+    runs-on: self-hosted
+    timeout-minutes: 5
+    outputs:
+      should_run: ${{ steps.authorize.outputs.should_run }}
+      controller_ref: ${{ steps.authorize.outputs.controller_ref }}
+      source_ref: ${{ steps.authorize.outputs.source_ref }}
+      base_sha: ${{ steps.authorize.outputs.base_sha }}
+      head_sha: ${{ steps.authorize.outputs.head_sha }}
+    steps:
+      - name: Authorize source ref
+        id: authorize
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REPOSITORY: ${{ github.repository }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_DRAFT: ${{ github.event.pull_request.draft }}
+          MANUAL_REF: ${{ inputs.ref }}
+          WORKFLOW_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+            {
+              echo "should_run=true"
+              echo "controller_ref=${WORKFLOW_SHA}"
+              echo "source_ref=${MANUAL_REF}"
+              echo "base_sha="
+              echo "head_sha="
+            } >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          if [[ "${HEAD_REPOSITORY}" != "${BASE_REPOSITORY}" ]]; then
+            echo "Fork PR execution is disabled until an isolated approval path is configured." >&2
+            exit 1
+          fi
+
+          should_run=true
+          if [[ "${PR_DRAFT}" == "true" ]]; then
+            should_run=false
+          fi
+          {
+            echo "should_run=${should_run}"
+            echo "controller_ref=${BASE_SHA}"
+            echo "source_ref=refs/pull/${PR_NUMBER}/merge"
+            echo "base_sha=${BASE_SHA}"
+            echo "head_sha=${HEAD_SHA}"
+          } >> "${GITHUB_OUTPUT}"
+
+  test:
+    name: standard / torch-2.10.0
+    needs: authorize
+    if: needs.authorize.outputs.should_run == 'true'
+    runs-on: self-hosted
+    timeout-minutes: 180
+    container:
+      image: harbor.sourcefind.cn:5443/dcu/admin/base/dev:rockylinux8.6-mpi5.0-gcc10.3-cmake3.29-py3.10-mkl2020.4.304
+      volumes:
+        - /opt/hyhal:/opt/hyhal:ro
+      options: >-
+        --device=/dev/kfd
+        --device=/dev/dri
+        --group-add=video
+        --shm-size=16g
+        --cap-add=SYS_PTRACE
+    env:
+      BUILD_VARIANT: standard
+      TORCH_VERSION: "2.10.0"
+      DTK_PACKAGE: http://10.16.1.201:8000/dtk-pkg/dtk26.04/DTK-26.04-rc4-centos8-x86_64.tar.gz
+    steps:
+      - name: Normalize workspace ownership before checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          workspace="$(realpath -m -- "${GITHUB_WORKSPACE}")"
+          runner_temp="$(realpath -m -- "${RUNNER_TEMP}")"
+          work_root="$(dirname -- "${runner_temp}")"
+          case "${workspace}" in "${work_root}"/*/*) ;; *) exit 1 ;; esac
+          owner="$(stat -c '%u:%g' -- "${runner_temp}")"
+          [[ "${owner}" =~ ^[1-9][0-9]*:[0-9]+$ ]]
+          chown -R -- "${owner}" "${workspace}"
+
+      - name: Checkout trusted controller
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ needs.authorize.outputs.controller_ref }}
+          path: controller
+          fetch-depth: 1
+          submodules: false
+          persist-credentials: false
+
+      - name: Checkout selected source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ needs.authorize.outputs.source_ref }}
+          path: source
+          fetch-depth: 2
+          submodules: false
+          persist-credentials: false
+
+      - name: Validate PR merge ref
+        if: github.event_name == 'pull_request_target'
+        shell: bash
+        run: >-
+          bash controller/.github/scripts/hcu/ci.sh validate-pr-merge source
+          "${{ needs.authorize.outputs.base_sha }}"
+          "${{ needs.authorize.outputs.head_sha }}"
+
+      - name: Checkout pinned rocSHMEM submodule
+        shell: bash
+        env:
+          HYGON_AI_CI_TOKEN: ${{ secrets.HYGON_AI_CI_TOKEN }}
+        run: bash controller/.github/scripts/hcu/ci.sh checkout-rocshmem source
+
+      - name: Build and verify wheel
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p source/ci-logs
+          bash controller/.github/scripts/hcu/ci.sh \
+            build-wheel source "${BUILD_VARIANT}" "${TORCH_VERSION}" "${DTK_PACKAGE}" source/final \
+            2>&1 | tee source/ci-logs/build.log
+
+      - name: Run PR test hook
+        shell: bash
+        run: bash controller/.github/scripts/hcu/ci.sh run-pr-tests source source/final source/ci-logs
+
+      - name: Upload wheel and test logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: deepep-pr-hcu-${{ github.event.pull_request.number || github.run_id }}-${{ github.run_attempt }}
+          path: |
+            source/final/*.whl
+            source/ci-logs/
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Restore workspace ownership
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f controller/.github/scripts/hcu/ci.sh ]]; then
+            bash controller/.github/scripts/hcu/ci.sh restore-workspace "${GITHUB_WORKSPACE}"
+          else
+            owner="$(stat -c '%u:%g' -- "${RUNNER_TEMP}")"
+            [[ "${owner}" =~ ^[1-9][0-9]*:[0-9]+$ ]]
+            chown -R -- "${owner}" "${GITHUB_WORKSPACE}"
+          fi
