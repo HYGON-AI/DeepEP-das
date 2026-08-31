@@ -56,7 +56,9 @@ jobs:
   test:
     name: ${{ inputs.build_variant }} / ${{ inputs.test_profile }}
     if: vars.DEEPEP_HCU_NIGHTLY_ENABLED == 'true'
-    runs-on: self-hosted
+    runs-on:
+      group: ci-general
+      labels: [self-hosted, ci, bw1100]
     timeout-minutes: 360
     container:
       image: ${{ inputs.build_variant == 'shca' && '10.16.1.152:5000/jenkins/base_env/shca17:ubuntu22.04-dtk2604-py3.10-dtk2604' || 'harbor.sourcefind.cn:5443/dcu/admin/base/dev:rockylinux8.6-mpi5.0-gcc10.3-cmake3.29-py3.10-mkl2020.4.304' }}

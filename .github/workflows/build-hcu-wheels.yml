@@ -27,7 +27,9 @@ env:
 jobs:
   build:
     name: ${{ matrix.build_variant }} / torch-${{ matrix.torch_version }}
-    runs-on: self-hosted
+    runs-on:
+      group: ci-general
+      labels: [self-hosted, ci, bw1100]
     timeout-minutes: 180
     strategy:
       fail-fast: false
