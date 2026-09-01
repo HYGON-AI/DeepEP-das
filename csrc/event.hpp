@@ -8,8 +8,6 @@
 
 namespace deep_ep {
 
-using HIPStream = decltype(at::hip::getCurrentHIPStreamMasqueradingAsCUDA());
-
 struct EventHandle {
     std::shared_ptr<torch::Event> event;
 
@@ -18,7 +16,7 @@ struct EventHandle {
         event->record(at::hip::getCurrentHIPStreamMasqueradingAsCUDA());
     }
 
-    explicit EventHandle(const HIPStream &stream) {
+    explicit EventHandle(const at::hip::HIPStreamMasqueradingAsCUDA &stream) {
         event = std::make_shared<torch::Event>(torch::kCUDA);
         event->record(stream);
     }
@@ -30,18 +28,19 @@ struct EventHandle {
     }
 };
 
-inline torch::Event create_event(const HIPStream &s) {
+inline torch::Event create_event(const at::hip::HIPStreamMasqueradingAsCUDA &s) {
     auto event = torch::Event(torch::kCUDA);
     event.record(s);
     return event;
 }
 
-inline void stream_wait(const HIPStream &s_0, const HIPStream &s_1) {
+inline void stream_wait(const at::hip::HIPStreamMasqueradingAsCUDA &s_0,
+                        const at::hip::HIPStreamMasqueradingAsCUDA &s_1) {
     EP_HOST_ASSERT(s_0.id() != s_1.id());
     s_0.unwrap().wait(create_event(s_1));
 }
 
-inline void stream_wait(const HIPStream &s, const EventHandle &event) {
+inline void stream_wait(const at::hip::HIPStreamMasqueradingAsCUDA &s, const EventHandle &event) {
     s.unwrap().wait(*event.event);
 }
 

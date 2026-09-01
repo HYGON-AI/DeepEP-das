@@ -51,7 +51,7 @@ private:
     hipIpcMemHandle_t ipc_handles[NUM_MAX_NVL_PEERS];
 
     // Stream for communication
-    HIPStream comm_stream;
+    at::hip::HIPStreamMasqueradingAsCUDA comm_stream;
 
     // After IPC/DUSHMEM synchronization, this flag will be true
     bool available = false;
