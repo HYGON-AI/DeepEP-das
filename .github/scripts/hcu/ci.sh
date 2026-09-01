@@ -24,6 +24,34 @@ append_summary() {
     fi
 }
 
+runner_group_id() {
+    local runner_temp group_id
+    runner_temp="$(realpath -- "${RUNNER_TEMP:?RUNNER_TEMP is required}")"
+    group_id="$(stat -c '%g' -- "${runner_temp}")"
+    [[ "${group_id}" =~ ^[1-9][0-9]*$ ]] || die "unsafe runner group ID: ${group_id}"
+    printf '%s\n' "${group_id}"
+}
+
+prepare_ci_public_root() {
+    local public_root runner_group
+    public_root="$(realpath -m -- "$1")"
+
+    case "${public_root}" in
+        /ci_public/deepep-das/*) ;;
+        *) die "refusing to prepare unexpected CI public root: ${public_root}" ;;
+    esac
+
+    runner_group="$(runner_group_id)"
+    umask 0002
+    mkdir -p -- "${public_root}"
+    chgrp -- "${runner_group}" "${public_root}"
+    chmod 2775 -- "${public_root}"
+    [[ -d "${public_root}" && -w "${public_root}" ]] || \
+        die "CI public root is not writable: ${public_root}"
+
+    append_summary "- CI public root: ${public_root} (group ${runner_group}, mode 2775)"
+}
+
 restore_workspace() {
     local workspace runner_temp work_root owner
     workspace="$(realpath -m -- "$1")"
@@ -240,7 +268,7 @@ run_nightly_tests() {
 }
 
 save_ci_output() {
-    local source_dir public_root destination parent_dir destination_name staging git_sha
+    local source_dir public_root destination parent_dir destination_name staging git_sha runner_group
     local -a wheels
     source_dir="$(realpath -m -- "$1")"
     public_root="$(realpath -- "${CI_PUBLIC_ROOT:-/ci_public}")"
@@ -293,7 +321,9 @@ save_ci_output() {
         done < <(find . -type f ! -name SHA256SUMS -print0 | sort -z)
     ) > "${staging}/SHA256SUMS"
 
-    find "${staging}" -type d -exec chmod 0775 {} +
+    runner_group="$(runner_group_id)"
+    chgrp -R -- "${runner_group}" "${staging}"
+    find "${staging}" -type d -exec chmod 2775 {} +
     find "${staging}" -type f -exec chmod 0664 {} +
     mv -- "${staging}" "${destination}"
     append_summary "- CI output directory: ${destination}"
@@ -303,6 +333,7 @@ save_ci_output() {
 usage() {
     cat <<'EOF'
 Usage:
+  ci.sh prepare-ci-public-root <public-root>
   ci.sh restore-workspace <workspace>
   ci.sh validate-pr-merge <source-dir> <base-sha> <head-sha>
   ci.sh checkout-rocshmem <source-dir>
@@ -315,6 +346,10 @@ EOF
 
 command="${1:-}"
 case "${command}" in
+    prepare-ci-public-root)
+        [[ "$#" -eq 2 ]] || { usage; exit 2; }
+        prepare_ci_public_root "$2"
+        ;;
     restore-workspace)
         [[ "$#" -eq 2 ]] || { usage; exit 2; }
         restore_workspace "$2"

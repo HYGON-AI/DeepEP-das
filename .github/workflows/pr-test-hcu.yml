@@ -150,11 +150,9 @@ jobs:
 
       - name: Prepare CI public root
         shell: bash
-        run: |
-          set -euo pipefail
-          umask 0002
-          mkdir -p -- "${CI_PUBLIC_ROOT}"
-          [[ -d "${CI_PUBLIC_ROOT}" && -w "${CI_PUBLIC_ROOT}" ]]
+        run: >-
+          bash controller/.github/scripts/hcu/ci.sh
+          prepare-ci-public-root "${CI_PUBLIC_ROOT}"
 
       - name: Validate PR merge ref
         if: github.event_name == 'pull_request_target'
