@@ -100,18 +100,8 @@ jobs:
       group: ci-general
       labels: [self-hosted, ci, bw1100]
     timeout-minutes: 180
-    container:
-      image: harbor.sourcefind.cn:5443/dcu/admin/base/dev:rockylinux8.6-mpi5.0-gcc10.3-cmake3.29-py3.10-mkl2020.4.304
-      volumes:
-        - /opt/hyhal:/opt/hyhal:ro
-        - /ci_public/deepep-das/runs:/ci_public/deepep-das/runs
-      options: >-
-        --device=/dev/kfd
-        --device=/dev/dri
-        --group-add=video
-        --shm-size=16g
-        --cap-add=SYS_PTRACE
     env:
+      CI_IMAGE: harbor.sourcefind.cn:5443/dcu/admin/base/dev:rockylinux8.6-mpi5.0-gcc10.3-cmake3.29-py3.10-mkl2020.4.304
       BUILD_VARIANT: standard
       TORCH_VERSION: "2.10.0"
       DTK_PACKAGE: http://10.16.1.201:8000/dtk-pkg/dtk26.04/DTK-26.04-rc4-centos8-x86_64.tar.gz
@@ -128,7 +118,11 @@ jobs:
           case "${workspace}" in "${work_root}"/*/*) ;; *) exit 1 ;; esac
           owner="$(stat -c '%u:%g' -- "${runner_temp}")"
           [[ "${owner}" =~ ^[1-9][0-9]*:[0-9]+$ ]]
-          chown -R -- "${owner}" "${workspace}"
+          docker run --rm \
+            --volume "${workspace}:${workspace}" \
+            --entrypoint chown \
+            "${CI_IMAGE}" \
+            -R -- "${owner}" "${workspace}"
 
       - name: Checkout trusted controller
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
@@ -148,6 +142,14 @@ jobs:
           submodules: false
           persist-credentials: false
 
+      - name: Prepare CI public root
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 0002
+          mkdir -p -- "${CI_PUBLIC_ROOT}"
+          [[ -d "${CI_PUBLIC_ROOT}" && -w "${CI_PUBLIC_ROOT}" ]]
+
       - name: Validate PR merge ref
         if: github.event_name == 'pull_request_target'
         shell: bash
@@ -166,18 +168,42 @@ jobs:
           bash controller/.github/scripts/hcu/ci.sh checkout-rocshmem source \
             2>&1 | tee source/ci-logs/submodule.log
 
-      - name: Build and verify wheel
+      - name: Build, verify, and run PR tests
         shell: bash
         run: |
           set -o pipefail
           mkdir -p source/ci-logs
-          bash controller/.github/scripts/hcu/ci.sh \
-            build-wheel source "${BUILD_VARIANT}" "${TORCH_VERSION}" "${DTK_PACKAGE}" source/final \
-            2>&1 | tee source/ci-logs/build.log
-
-      - name: Run PR test hook
-        shell: bash
-        run: bash controller/.github/scripts/hcu/ci.sh run-pr-tests source source/final source/ci-logs
+          docker run --rm \
+            --device=/dev/kfd \
+            --device=/dev/dri \
+            --group-add=video \
+            --shm-size=16g \
+            --cap-add=SYS_PTRACE \
+            --volume "${GITHUB_WORKSPACE}/source:${GITHUB_WORKSPACE}/source" \
+            --volume "${GITHUB_WORKSPACE}/controller:${GITHUB_WORKSPACE}/controller:ro" \
+            --volume /opt/hyhal:/opt/hyhal:ro \
+            --workdir "${GITHUB_WORKSPACE}/source" \
+            --env PIP_INDEX_URL \
+            --env PIP_TRUSTED_HOST \
+            --env CISMI_TIMEOUT \
+            --env CI \
+            --env FREE_BUILD_DIR \
+            --env BUILD_VARIANT \
+            --env TORCH_VERSION \
+            --env DTK_PACKAGE \
+            --env SOURCE_DIR="${GITHUB_WORKSPACE}/source" \
+            --env CONTROLLER_SCRIPT="${GITHUB_WORKSPACE}/controller/.github/scripts/hcu/ci.sh" \
+            --entrypoint bash \
+            "${CI_IMAGE}" \
+            -c '
+              set -euo pipefail
+              git config --global --add safe.directory "${SOURCE_DIR}"
+              bash "${CONTROLLER_SCRIPT}" build-wheel \
+                "${SOURCE_DIR}" "${BUILD_VARIANT}" "${TORCH_VERSION}" \
+                "${DTK_PACKAGE}" "${SOURCE_DIR}/final"
+              bash "${CONTROLLER_SCRIPT}" run-pr-tests \
+                "${SOURCE_DIR}" "${SOURCE_DIR}/final" "${SOURCE_DIR}/ci-logs"
+            ' 2>&1 | tee source/ci-logs/build.log
 
       - name: Save wheel and test logs to CI public directory
         if: always()
@@ -192,9 +218,17 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -f controller/.github/scripts/hcu/ci.sh ]]; then
-            bash controller/.github/scripts/hcu/ci.sh restore-workspace "${GITHUB_WORKSPACE}"
-          else
-            owner="$(stat -c '%u:%g' -- "${RUNNER_TEMP}")"
+            workspace="$(realpath -m -- "${GITHUB_WORKSPACE}")"
+            runner_temp="$(realpath -m -- "${RUNNER_TEMP}")"
+            work_root="$(dirname -- "${runner_temp}")"
+            case "${workspace}" in "${work_root}"/*/*) ;; *) exit 1 ;; esac
+            owner="$(stat -c '%u:%g' -- "${runner_temp}")"
             [[ "${owner}" =~ ^[1-9][0-9]*:[0-9]+$ ]]
-            chown -R -- "${owner}" "${GITHUB_WORKSPACE}"
+            docker run --rm \
+              --volume "${workspace}:${workspace}" \
+              --entrypoint chown \
+              "${CI_IMAGE}" \
+              -R -- "${owner}" "${workspace}"
+          else
+            echo "Controller checkout is unavailable; workspace ownership was not changed by this job."
           fi

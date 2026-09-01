@@ -261,11 +261,11 @@ save_ci_output() {
         shopt -u nullglob
         if (( ${#wheels[@]} > 0 )); then
             mkdir -p -- "${staging}/wheels"
-            cp -p -- "${wheels[@]}" "${staging}/wheels/"
+            cp -- "${wheels[@]}" "${staging}/wheels/"
         fi
     fi
     if [[ -d "${source_dir}/ci-logs" ]]; then
-        cp -a -- "${source_dir}/ci-logs" "${staging}/"
+        cp -R -- "${source_dir}/ci-logs" "${staging}/"
     fi
 
     git_sha="unknown"

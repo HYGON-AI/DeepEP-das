@@ -47,20 +47,8 @@ jobs:
           - build_variant: shca
             image: 10.16.1.152:5000/jenkins/base_env/shca17:ubuntu22.04-dtk2604-py3.10-dtk2604
             dtk_package: /ArchivedFile/dtk-pkg/dtk26.04/DTK-26.04-rc4-ubuntu20.04-x86_64.tar.gz
-    container:
-      image: ${{ matrix.image }}
-      volumes:
-        - /public/opendas/ArchivedFile:/ArchivedFile:ro
-        - /opt/hyhal:/opt/hyhal:ro
-        - /ci_public/deepep-das/runs:/ci_public/deepep-das/runs
-      options: >-
-        --device=/dev/kfd
-        --device=/dev/dri
-        --group-add=video
-        --shm-size=16g
-        --cap-add=SYS_PTRACE
-        --privileged
     env:
+      CI_IMAGE: ${{ matrix.image }}
       BUILD_VARIANT: ${{ matrix.build_variant }}
       TORCH_VERSION: ${{ matrix.torch_version }}
       DTK_PACKAGE: ${{ matrix.dtk_package }}
@@ -77,7 +65,11 @@ jobs:
           case "${workspace}" in "${work_root}"/*/*) ;; *) exit 1 ;; esac
           owner="$(stat -c '%u:%g' -- "${runner_temp}")"
           [[ "${owner}" =~ ^[1-9][0-9]*:[0-9]+$ ]]
-          chown -R -- "${owner}" "${workspace}"
+          docker run --rm \
+            --volume "${workspace}:${workspace}" \
+            --entrypoint chown \
+            "${CI_IMAGE}" \
+            -R -- "${owner}" "${workspace}"
 
       - name: Checkout source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
@@ -86,6 +78,14 @@ jobs:
           fetch-depth: 0
           submodules: false
           persist-credentials: false
+
+      - name: Prepare CI public root
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 0002
+          mkdir -p -- "${CI_PUBLIC_ROOT}"
+          [[ -d "${CI_PUBLIC_ROOT}" && -w "${CI_PUBLIC_ROOT}" ]]
 
       - name: Checkout pinned rocSHMEM submodule
         shell: bash
@@ -102,9 +102,35 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p source/ci-logs
-          bash source/.github/scripts/hcu/ci.sh \
-            build-wheel source "${BUILD_VARIANT}" "${TORCH_VERSION}" "${DTK_PACKAGE}" source/final \
-            2>&1 | tee source/ci-logs/build.log
+          docker run --rm \
+            --device=/dev/kfd \
+            --device=/dev/dri \
+            --group-add=video \
+            --shm-size=16g \
+            --cap-add=SYS_PTRACE \
+            --privileged \
+            --volume "${GITHUB_WORKSPACE}/source:${GITHUB_WORKSPACE}/source" \
+            --volume /public/opendas/ArchivedFile:/ArchivedFile:ro \
+            --volume /opt/hyhal:/opt/hyhal:ro \
+            --workdir "${GITHUB_WORKSPACE}/source" \
+            --env PIP_INDEX_URL \
+            --env PIP_TRUSTED_HOST \
+            --env CISMI_TIMEOUT \
+            --env CI \
+            --env FREE_BUILD_DIR \
+            --env BUILD_VARIANT \
+            --env TORCH_VERSION \
+            --env DTK_PACKAGE \
+            --env SOURCE_DIR="${GITHUB_WORKSPACE}/source" \
+            --entrypoint bash \
+            "${CI_IMAGE}" \
+            -c '
+              set -euo pipefail
+              git config --global --add safe.directory "${SOURCE_DIR}"
+              bash "${SOURCE_DIR}/.github/scripts/hcu/ci.sh" \
+                build-wheel "${SOURCE_DIR}" "${BUILD_VARIANT}" "${TORCH_VERSION}" \
+                "${DTK_PACKAGE}" "${SOURCE_DIR}/final"
+            ' 2>&1 | tee source/ci-logs/build.log
 
       - name: Save wheel and build log to CI public directory
         if: always()
@@ -119,9 +145,17 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -f source/.github/scripts/hcu/ci.sh ]]; then
-            bash source/.github/scripts/hcu/ci.sh restore-workspace "${GITHUB_WORKSPACE}"
-          else
-            owner="$(stat -c '%u:%g' -- "${RUNNER_TEMP}")"
+            workspace="$(realpath -m -- "${GITHUB_WORKSPACE}")"
+            runner_temp="$(realpath -m -- "${RUNNER_TEMP}")"
+            work_root="$(dirname -- "${runner_temp}")"
+            case "${workspace}" in "${work_root}"/*/*) ;; *) exit 1 ;; esac
+            owner="$(stat -c '%u:%g' -- "${runner_temp}")"
             [[ "${owner}" =~ ^[1-9][0-9]*:[0-9]+$ ]]
-            chown -R -- "${owner}" "${GITHUB_WORKSPACE}"
+            docker run --rm \
+              --volume "${workspace}:${workspace}" \
+              --entrypoint chown \
+              "${CI_IMAGE}" \
+              -R -- "${owner}" "${workspace}"
+          else
+            echo "Source checkout is unavailable; workspace ownership was not changed by this job."
           fi
