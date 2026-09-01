@@ -52,7 +52,7 @@ jobs:
       volumes:
         - /public/opendas/ArchivedFile:/ArchivedFile:ro
         - /opt/hyhal:/opt/hyhal:ro
-        - /ci_public:/ci_public
+        - /ci_public/deepep-das/runs:/ci_public/deepep-das/runs
       options: >-
         --device=/dev/kfd
         --device=/dev/dri
@@ -64,7 +64,7 @@ jobs:
       BUILD_VARIANT: ${{ matrix.build_variant }}
       TORCH_VERSION: ${{ matrix.torch_version }}
       DTK_PACKAGE: ${{ matrix.dtk_package }}
-      CI_PUBLIC_ROOT: /ci_public
+      CI_PUBLIC_ROOT: /ci_public/deepep-das/runs
       CI_PUBLIC_OUTPUT_DIR: /ci_public/deepep-das/runs/${{ github.run_id }}/attempt-${{ github.run_attempt }}/build-${{ matrix.build_variant }}-torch-${{ matrix.torch_version }}
     steps:
       - name: Normalize workspace ownership before checkout
