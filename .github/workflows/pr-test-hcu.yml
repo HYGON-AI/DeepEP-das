@@ -104,6 +104,7 @@ jobs:
       image: harbor.sourcefind.cn:5443/dcu/admin/base/dev:rockylinux8.6-mpi5.0-gcc10.3-cmake3.29-py3.10-mkl2020.4.304
       volumes:
         - /opt/hyhal:/opt/hyhal:ro
+        - /ci_public:/ci_public
       options: >-
         --device=/dev/kfd
         --device=/dev/dri
@@ -114,6 +115,8 @@ jobs:
       BUILD_VARIANT: standard
       TORCH_VERSION: "2.10.0"
       DTK_PACKAGE: http://10.16.1.201:8000/dtk-pkg/dtk26.04/DTK-26.04-rc4-centos8-x86_64.tar.gz
+      CI_PUBLIC_ROOT: /ci_public
+      CI_PUBLIC_OUTPUT_DIR: /ci_public/deepep-das/runs/${{ github.run_id }}/attempt-${{ github.run_attempt }}/pr-standard-torch-2.10.0
     steps:
       - name: Normalize workspace ownership before checkout
         shell: bash
@@ -176,16 +179,12 @@ jobs:
         shell: bash
         run: bash controller/.github/scripts/hcu/ci.sh run-pr-tests source source/final source/ci-logs
 
-      - name: Upload wheel and test logs
+      - name: Save wheel and test logs to CI public directory
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
-        with:
-          name: deepep-pr-hcu-${{ github.event.pull_request.number || github.run_id }}-${{ github.run_attempt }}
-          path: |
-            source/final/*.whl
-            source/ci-logs/
-          if-no-files-found: warn
-          retention-days: 7
+        shell: bash
+        run: >-
+          bash controller/.github/scripts/hcu/ci.sh
+          save-ci-output source "${CI_PUBLIC_OUTPUT_DIR}"
 
       - name: Restore workspace ownership
         if: always()

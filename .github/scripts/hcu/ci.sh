@@ -234,6 +234,67 @@ run_nightly_tests() {
     append_summary "- Nightly test hook: passed"
 }
 
+save_ci_output() {
+    local source_dir public_root destination parent_dir destination_name staging git_sha
+    local -a wheels
+    source_dir="$(realpath -m -- "$1")"
+    public_root="$(realpath -- "${CI_PUBLIC_ROOT:-/ci_public}")"
+    destination="$(realpath -m -- "$2")"
+
+    [[ -d "${public_root}" && -w "${public_root}" ]] || \
+        die "CI public root is not a writable directory: ${public_root}"
+    case "${destination}" in
+        "${public_root}"/*) ;;
+        *) die "CI output directory must be inside ${public_root}: ${destination}" ;;
+    esac
+    [[ ! -e "${destination}" ]] || die "refusing to overwrite CI output: ${destination}"
+
+    parent_dir="$(dirname -- "${destination}")"
+    destination_name="$(basename -- "${destination}")"
+    umask 0002
+    mkdir -p -- "${parent_dir}"
+    staging="$(mktemp -d "${parent_dir}/.${destination_name}.tmp.XXXXXX")"
+
+    if [[ -d "${source_dir}/final" ]]; then
+        shopt -s nullglob
+        wheels=("${source_dir}"/final/*.whl)
+        shopt -u nullglob
+        if (( ${#wheels[@]} > 0 )); then
+            mkdir -p -- "${staging}/wheels"
+            cp -p -- "${wheels[@]}" "${staging}/wheels/"
+        fi
+    fi
+    if [[ -d "${source_dir}/ci-logs" ]]; then
+        cp -a -- "${source_dir}/ci-logs" "${staging}/"
+    fi
+
+    git_sha="unknown"
+    if git -C "${source_dir}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        git_sha="$(git -C "${source_dir}" rev-parse HEAD)"
+    fi
+    {
+        printf 'repository=%s\n' "${GITHUB_REPOSITORY:-unknown}"
+        printf 'source_sha=%s\n' "${git_sha}"
+        printf 'run_id=%s\n' "${GITHUB_RUN_ID:-unknown}"
+        printf 'run_attempt=%s\n' "${GITHUB_RUN_ATTEMPT:-unknown}"
+        printf 'build_variant=%s\n' "${BUILD_VARIANT:-unknown}"
+        printf 'torch_version=%s\n' "${TORCH_VERSION:-unknown}"
+        printf 'test_profile=%s\n' "${DEEPEP_TEST_PROFILE:-not-applicable}"
+    } > "${staging}/metadata.txt"
+    (
+        cd "${staging}"
+        while IFS= read -r -d '' file; do
+            sha256sum -- "${file}"
+        done < <(find . -type f ! -name SHA256SUMS -print0 | sort -z)
+    ) > "${staging}/SHA256SUMS"
+
+    find "${staging}" -type d -exec chmod 0775 {} +
+    find "${staging}" -type f -exec chmod 0664 {} +
+    mv -- "${staging}" "${destination}"
+    append_summary "- CI output directory: ${destination}"
+    printf '%s\n' "${destination}"
+}
+
 usage() {
     cat <<'EOF'
 Usage:
@@ -243,6 +304,7 @@ Usage:
   ci.sh build-wheel <source-dir> <standard|shca> <torch-version> <dtk-package> <output-dir>
   ci.sh run-pr-tests <source-dir> <wheel-dir> <log-dir>
   ci.sh run-nightly-tests <source-dir> <wheel-dir> <log-dir>
+  ci.sh save-ci-output <source-dir> <destination-dir>
 EOF
 }
 
@@ -271,6 +333,10 @@ case "${command}" in
     run-nightly-tests)
         [[ "$#" -eq 4 ]] || { usage; exit 2; }
         run_nightly_tests "$2" "$3" "$4"
+        ;;
+    save-ci-output)
+        [[ "$#" -eq 3 ]] || { usage; exit 2; }
+        save_ci_output "$2" "$3"
         ;;
     *)
         usage

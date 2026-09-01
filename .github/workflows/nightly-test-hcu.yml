@@ -65,6 +65,7 @@ jobs:
       volumes:
         - /public/opendas/ArchivedFile:/ArchivedFile:ro
         - /opt/hyhal:/opt/hyhal:ro
+        - /ci_public:/ci_public
         - /ci_public/deepep-das/nightly:/ci/nightly:ro
       options: >-
         --device=/dev/kfd
@@ -78,6 +79,8 @@ jobs:
       DTK_PACKAGE: ${{ inputs.build_variant == 'shca' && '/ArchivedFile/dtk-pkg/dtk26.04/DTK-26.04-rc4-ubuntu20.04-x86_64.tar.gz' || 'http://10.16.1.201:8000/dtk-pkg/dtk26.04/DTK-26.04-rc4-centos8-x86_64.tar.gz' }}
       DEEPEP_TEST_PROFILE: ${{ inputs.test_profile }}
       DEEPEP_NIGHTLY_CONFIG_ROOT: /ci/nightly
+      CI_PUBLIC_ROOT: /ci_public
+      CI_PUBLIC_OUTPUT_DIR: /ci_public/deepep-das/runs/${{ github.run_id }}/attempt-${{ github.run_attempt }}/nightly-${{ inputs.build_variant }}-${{ inputs.test_profile }}-torch-${{ inputs.torch_version }}
     steps:
       - name: Normalize workspace ownership before checkout
         shell: bash
@@ -134,16 +137,12 @@ jobs:
           bash controller/.github/scripts/hcu/ci.sh
           run-nightly-tests source source/final source/ci-logs
 
-      - name: Upload wheel and Nightly logs
+      - name: Save wheel and Nightly logs to CI public directory
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
-        with:
-          name: deepep-nightly-${{ inputs.build_variant }}-${{ inputs.test_profile }}-${{ github.run_id }}
-          path: |
-            source/final/*.whl
-            source/ci-logs/
-          if-no-files-found: warn
-          retention-days: 14
+        shell: bash
+        run: >-
+          bash controller/.github/scripts/hcu/ci.sh
+          save-ci-output source "${CI_PUBLIC_OUTPUT_DIR}"
 
       - name: Restore workspace ownership
         if: always()
