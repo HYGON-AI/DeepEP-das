@@ -46,7 +46,7 @@ jobs:
             dtk_package: http://10.16.1.201:8000/dtk-pkg/dtk26.04/DTK-26.04-rc4-centos8-x86_64.tar.gz
           - build_variant: shca
             image: 10.16.1.152:5000/jenkins/base_env/shca17:ubuntu22.04-dtk2604-py3.10-dtk2604
-            dtk_package: /ArchivedFile/dtk-pkg/dtk26.04/DTK-26.04-rc4-ubuntu20.04-x86_64.tar.gz
+            dtk_package: http://10.16.1.201:8000/dtk-pkg/dtk26.04/DTK-26.04-rc4-ubuntu20.04-x86_64.tar.gz
     container:
       image: ${{ matrix.image }}
       volumes:

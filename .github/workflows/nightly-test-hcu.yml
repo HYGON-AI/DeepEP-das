@@ -76,7 +76,7 @@ jobs:
     env:
       BUILD_VARIANT: ${{ inputs.build_variant }}
       TORCH_VERSION: ${{ inputs.torch_version }}
-      DTK_PACKAGE: ${{ inputs.build_variant == 'shca' && '/ArchivedFile/dtk-pkg/dtk26.04/DTK-26.04-rc4-ubuntu20.04-x86_64.tar.gz' || 'http://10.16.1.201:8000/dtk-pkg/dtk26.04/DTK-26.04-rc4-centos8-x86_64.tar.gz' }}
+      DTK_PACKAGE: ${{ inputs.build_variant == 'shca' && 'http://10.16.1.201:8000/dtk-pkg/dtk26.04/DTK-26.04-rc4-ubuntu20.04-x86_64.tar.gz' || 'http://10.16.1.201:8000/dtk-pkg/dtk26.04/DTK-26.04-rc4-centos8-x86_64.tar.gz' }}
       DEEPEP_TEST_PROFILE: ${{ inputs.test_profile }}
       DEEPEP_NIGHTLY_CONFIG_ROOT: /ci/nightly
       CI_PUBLIC_ROOT: /ci_public/deepep-das/runs
