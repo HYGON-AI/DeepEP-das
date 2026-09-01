@@ -144,7 +144,12 @@ build_wheel() {
     source_dtk
     install_build_dependencies "${torch_version}"
 
-    rm -rf -- "${source_dir}/build_" "${source_dir}/dist" "${output_dir}"
+    rm -rf -- \
+        "${source_dir}/build_" \
+        "${source_dir}/dist" \
+        "${source_dir}/third-party/rocshmem/build" \
+        "${source_dir}/third-party/rocshmem_install" \
+        "${output_dir}"
     mkdir -p -- "${output_dir}"
     (
         cd "${source_dir}"
