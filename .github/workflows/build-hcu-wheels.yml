@@ -68,10 +68,30 @@ jobs:
           case "${workspace}" in "${work_root}"/*/*) ;; *) exit 1 ;; esac
           runner_owner="$(stat -c '%u:%g' -- "${RUNNER_TEMP}")"
           [[ "${runner_owner}" =~ ^[1-9][0-9]*:[0-9]+$ ]]
-          docker run --rm --user 0:0 \
-            --volume "${workspace}:/workspace" \
-            --entrypoint /bin/chown \
-            "${IMAGE}" -R -- "${runner_owner}" /workspace
+          runner_container=""
+          if [[ -f /.dockerenv ]]; then
+            current_hostname="$(hostname)"
+            if docker inspect --type container "${current_hostname}" >/dev/null 2>&1; then
+              runner_container="${current_hostname}"
+            else
+              while IFS= read -r container_id; do
+                container_hostname="$(docker inspect --format '{{.Config.Hostname}}' "${container_id}")"
+                if [[ "${container_hostname}" == "${current_hostname}" ]]; then
+                  runner_container="${container_id}"
+                  break
+                fi
+              done < <(docker ps --quiet)
+            fi
+          fi
+          if [[ -n "${runner_container}" ]]; then
+            docker exec --user 0 "${runner_container}" \
+              /bin/chown -R -- "${runner_owner}" "${workspace}"
+          else
+            docker run --rm --user 0:0 \
+              --volume "${workspace}:/workspace" \
+              --entrypoint /bin/chown \
+              "${IMAGE}" -R -- "${runner_owner}" /workspace
+          fi
 
       - name: Checkout source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2

@@ -52,16 +52,27 @@ validate_workspace_path() {
     printf '%s\n' "${path}"
 }
 
-container_workspace_path() {
-    local path workspace relative
-    path="$(validate_workspace_path "$1")"
-    workspace="$(realpath -m -- "${GITHUB_WORKSPACE}")"
-    if [[ "${path}" == "${workspace}" ]]; then
-        printf '/workspace\n'
-        return
+self_docker_container() {
+    local current_hostname container_id container_hostname
+    [[ -f /.dockerenv ]] || return 1
+    current_hostname="$(hostname)"
+
+    if docker inspect --type container "${current_hostname}" >/dev/null 2>&1; then
+        printf '%s\n' "${current_hostname}"
+        return 0
     fi
-    relative="${path#"${workspace}"/}"
-    printf '/workspace/%s\n' "${relative}"
+
+    while IFS= read -r container_id; do
+        [[ "${container_id}" =~ ^[0-9a-f]{12,64}$ ]] || continue
+        container_hostname="$(
+            docker inspect --format '{{.Config.Hostname}}' "${container_id}" 2>/dev/null || true
+        )"
+        if [[ "${container_hostname}" == "${current_hostname}" ]]; then
+            printf '%s\n' "${container_id}"
+            return 0
+        fi
+    done < <(docker ps --quiet)
+    return 1
 }
 
 prepare_ci_public_root() {
@@ -105,17 +116,22 @@ restore_workspace() {
 }
 
 restore_workspace_with_container() {
-    local workspace image owner
+    local workspace image owner runner_container
     workspace="$(validate_workspace_path "$1")"
     image="$2"
     owner="$(runner_owner)"
 
-    docker run --rm \
-        --user 0:0 \
-        --volume "${workspace}:/workspace" \
-        --entrypoint /bin/chown \
-        "${image}" \
-        -R -- "${owner}" /workspace
+    if runner_container="$(self_docker_container)"; then
+        docker exec --user 0 "${runner_container}" \
+            /bin/chown -R -- "${owner}" "${workspace}"
+    else
+        docker run --rm \
+            --user 0:0 \
+            --volume "${workspace}:/workspace" \
+            --entrypoint /bin/chown \
+            "${image}" \
+            -R -- "${owner}" /workspace
+    fi
 }
 
 validate_pr_merge() {
@@ -310,7 +326,8 @@ container_ci() {
 
 run_ci_container() {
     local controller_dir source_dir image build_variant torch_version dtk_package mode output_dir log_dir
-    local workspace container_controller container_source container_output container_log status nightly_temp
+    local workspace container_controller container_source container_output container_log
+    local status copy_status nightly_temp container_name host_container_log
     local -a docker_args
     controller_dir="$(validate_workspace_path "$1")"
     source_dir="$(validate_workspace_path "$2")"
@@ -322,10 +339,10 @@ run_ci_container() {
     output_dir="$(validate_workspace_path "$8")"
     log_dir="$(validate_workspace_path "$9")"
     workspace="$(realpath -- "${GITHUB_WORKSPACE}")"
-    container_controller="$(container_workspace_path "${controller_dir}")"
-    container_source="$(container_workspace_path "${source_dir}")"
-    container_output="$(container_workspace_path "${output_dir}")"
-    container_log="$(container_workspace_path "${log_dir}")"
+    container_controller="/workspace/${controller_dir#"${workspace}"/}"
+    container_source="/workspace/${source_dir#"${workspace}"/}"
+    container_output="/workspace/${output_dir#"${workspace}"/}"
+    container_log="/workspace/${log_dir#"${workspace}"/}"
 
     case "${mode}" in
         build|pr|nightly) ;;
@@ -333,10 +350,8 @@ run_ci_container() {
     esac
     mkdir -p -- "${log_dir}"
     docker_args=(
-        run --rm
         --user 0:0
         --workdir /workspace
-        --volume "${workspace}:/workspace"
         --volume /opt/hyhal:/opt/hyhal:ro
         --device /dev/kfd
         --device /dev/dri
@@ -368,24 +383,48 @@ run_ci_container() {
         nightly_temp="$(mktemp -d "${RUNNER_TEMP:?RUNNER_TEMP is required}/deepep-nightly.XXXXXX")"
         cp -R -- "${DEEPEP_NIGHTLY_CONFIG_ROOT}/." "${nightly_temp}/"
         docker_args+=(
-            --volume "${nightly_temp}:/ci/nightly:ro"
             --env DEEPEP_TEST_PROFILE
-            --env DEEPEP_NIGHTLY_CONFIG_ROOT=/ci/nightly
+            --env DEEPEP_NIGHTLY_CONFIG_ROOT=/tmp/ci-nightly
         )
     fi
 
-    set +e
-    docker "${docker_args[@]}" "${image}" \
+    container_name="deepep-${GITHUB_RUN_ID:?GITHUB_RUN_ID is required}-${GITHUB_RUN_ATTEMPT:-1}"
+    container_name+="-${build_variant}-torch-${torch_version//./-}"
+    docker rm --force "${container_name}" >/dev/null 2>&1 || true
+    docker create --name "${container_name}" "${docker_args[@]}" "${image}" \
         "${container_controller}/.github/scripts/hcu/ci.sh" container-ci \
         "${container_controller}" "${container_source}" \
         "${build_variant}" "${torch_version}" "${dtk_package}" "${mode}" \
         "${container_output}" "${container_log}" \
-        2>&1 | tee "${log_dir}/container.log"
+        >/dev/null
+    docker cp "${workspace}/." "${container_name}:/workspace/"
+    if [[ -n "${nightly_temp}" ]]; then
+        docker cp "${nightly_temp}" "${container_name}:/tmp/ci-nightly"
+    fi
+
+    host_container_log="$(mktemp "${RUNNER_TEMP}/deepep-container.XXXXXX.log")"
+    set +e
+    docker start --attach "${container_name}" 2>&1 | tee "${host_container_log}"
     status="${PIPESTATUS[0]}"
     set -e
 
+    copy_status=0
+    mkdir -p -- "${log_dir}"
+    docker cp "${container_name}:${container_log}/." "${log_dir}/" || copy_status=1
+    cp -- "${host_container_log}" "${log_dir}/container.log"
+    mkdir -p -- "${output_dir}"
+    if docker cp "${container_name}:${container_output}/." "${output_dir}/" 2>/dev/null; then
+        :
+    elif [[ "${status}" -eq 0 ]]; then
+        copy_status=1
+    fi
+    docker rm --force "${container_name}" >/dev/null
+    rm -f -- "${host_container_log}"
     if [[ -n "${nightly_temp}" ]]; then
         rm -rf -- "${nightly_temp}"
+    fi
+    if [[ "${status}" -eq 0 && "${copy_status}" -ne 0 ]]; then
+        die "CI container succeeded but its output could not be copied to the runner workspace"
     fi
     return "${status}"
 }
