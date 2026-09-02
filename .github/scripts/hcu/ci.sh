@@ -374,9 +374,9 @@ container_ci() {
     case "${output_dir}" in "${source_dir}"/*) ;; *) die "invalid output directory" ;; esac
     case "${log_dir}" in "${source_dir}"/*) ;; *) die "invalid log directory" ;; esac
 
+    git config --global --add safe.directory "${source_dir}"
     prepare_container_source "${source_dir}"
     mkdir -p -- "${log_dir}"
-    git config --global --add safe.directory "${source_dir}"
     git config --global --add safe.directory "${source_dir}/${ROCSHMEM_PATH}"
     git -C "${source_dir}" rev-parse HEAD > "${log_dir}/source-sha.log"
     if [[ -n "${DEEPEP_PR_BASE_SHA:-}" || -n "${DEEPEP_PR_HEAD_SHA:-}" ]]; then
