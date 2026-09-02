@@ -100,23 +100,16 @@ jobs:
       group: ci-general
       labels: [self-hosted, ci, bw1100]
     timeout-minutes: 180
-    container:
-      image: harbor.sourcefind.cn:5443/dcu/admin/base/dev:rockylinux8.6-mpi5.0-gcc10.3-cmake3.29-py3.10-mkl2020.4.304
-      volumes:
-        - /opt/hyhal:/opt/hyhal:ro
-        - /ci_public/deepep-das/runs:/ci_public/deepep-das/runs
-      options: >-
-        --device=/dev/kfd
-        --device=/dev/dri
-        --group-add=video
-        --shm-size=16g
-        --cap-add=SYS_PTRACE
     env:
+      IMAGE: >-
+        harbor.sourcefind.cn:5443/dcu/admin/base/dev:rockylinux8.6-mpi5.0-gcc10.3-cmake3.29-py3.10-mkl2020.4.304
       BUILD_VARIANT: standard
       TORCH_VERSION: "2.10.0"
       DTK_PACKAGE: http://10.16.1.201:8000/dtk-pkg/dtk26.04/DTK-26.04-rc4-centos8-x86_64.tar.gz
       CI_PUBLIC_ROOT: /ci_public/deepep-das/runs
-      CI_PUBLIC_OUTPUT_DIR: /ci_public/deepep-das/runs/${{ github.run_id }}/attempt-${{ github.run_attempt }}/pr-standard-torch-2.10.0
+      CI_PUBLIC_OUTPUT_DIR: >-
+        /ci_public/deepep-das/runs/${{ github.run_id }}/attempt-${{ github.run_attempt
+        }}/pr-standard-torch-2.10.0
     steps:
       - name: Normalize workspace ownership before checkout
         shell: bash
@@ -126,9 +119,12 @@ jobs:
           runner_temp="$(realpath -m -- "${RUNNER_TEMP}")"
           work_root="$(dirname -- "${runner_temp}")"
           case "${workspace}" in "${work_root}"/*/*) ;; *) exit 1 ;; esac
-          container_owner="$(id -u):$(id -g)"
-          [[ "${container_owner}" =~ ^[0-9]+:[0-9]+$ ]]
-          chown -R -- "${container_owner}" "${workspace}"
+          runner_owner="$(stat -c '%u:%g' -- "${RUNNER_TEMP}")"
+          [[ "${runner_owner}" =~ ^[1-9][0-9]*:[0-9]+$ ]]
+          docker run --rm --user 0:0 \
+            --volume "${workspace}:/workspace" \
+            --entrypoint /bin/chown \
+            "${IMAGE}" -R -- "${runner_owner}" /workspace
 
       - name: Checkout trusted controller
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
@@ -162,37 +158,15 @@ jobs:
           "${{ needs.authorize.outputs.base_sha }}"
           "${{ needs.authorize.outputs.head_sha }}"
 
-      - name: Checkout pinned rocSHMEM submodule
+      - name: Build and run PR checks in container
         shell: bash
         env:
           HYGON_AI_CI_TOKEN: ${{ secrets.HYGON_AI_CI_TOKEN }}
         run: |
-          set -o pipefail
-          mkdir -p source/ci-logs
-          git config --global --add safe.directory "$(realpath -- source)"
-          git config --global --add safe.directory "$(realpath -m -- source/third-party/rocshmem)"
-          bash controller/.github/scripts/hcu/ci.sh checkout-rocshmem source \
-            2>&1 | tee source/ci-logs/submodule.log
-
-      - name: Build and verify wheel
-        shell: bash
-        run: |
-          set -o pipefail
-          mkdir -p source/ci-logs
           bash controller/.github/scripts/hcu/ci.sh \
-            build-wheel source "${BUILD_VARIANT}" "${TORCH_VERSION}" "${DTK_PACKAGE}" source/final \
-            2>&1 | tee source/ci-logs/build.log
-
-      - name: Run PR test hook
-        shell: bash
-        run: bash controller/.github/scripts/hcu/ci.sh run-pr-tests source source/final source/ci-logs
-
-      - name: Save wheel and test logs to CI public directory
-        if: always()
-        shell: bash
-        run: >-
-          bash controller/.github/scripts/hcu/ci.sh
-          save-ci-output source "${CI_PUBLIC_OUTPUT_DIR}"
+            run-ci-container controller source "${IMAGE}" \
+            "${BUILD_VARIANT}" "${TORCH_VERSION}" "${DTK_PACKAGE}" pr \
+            source/final source/ci-logs
 
       - name: Restore workspace ownership
         if: always()
@@ -200,9 +174,26 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -f controller/.github/scripts/hcu/ci.sh ]]; then
-            bash controller/.github/scripts/hcu/ci.sh restore-workspace "${GITHUB_WORKSPACE}"
+            bash controller/.github/scripts/hcu/ci.sh \
+              restore-workspace-with-container "${GITHUB_WORKSPACE}" "${IMAGE}"
           else
-            owner="$(stat -c '%u:%g' -- "${RUNNER_TEMP}")"
-            [[ "${owner}" =~ ^[1-9][0-9]*:[0-9]+$ ]]
-            chown -R -- "${owner}" "${GITHUB_WORKSPACE}"
+            workspace="$(realpath -m -- "${GITHUB_WORKSPACE}")"
+            runner_owner="$(stat -c '%u:%g' -- "${RUNNER_TEMP}")"
+            [[ "${runner_owner}" =~ ^[1-9][0-9]*:[0-9]+$ ]]
+            docker run --rm --user 0:0 \
+              --volume "${workspace}:/workspace" \
+              --entrypoint /bin/chown \
+              "${IMAGE}" -R -- "${runner_owner}" /workspace
+          fi
+
+      - name: Save wheel and test logs to CI public directory
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f controller/.github/scripts/hcu/ci.sh ]]; then
+            bash controller/.github/scripts/hcu/ci.sh \
+              save-ci-output source "${CI_PUBLIC_OUTPUT_DIR}"
+          else
+            echo "CI controller was not checked out; no output is available to save."
           fi

@@ -32,6 +32,38 @@ runner_group_id() {
     printf '%s\n' "${group_id}"
 }
 
+runner_owner() {
+    local runner_temp owner
+    runner_temp="$(realpath -- "${RUNNER_TEMP:?RUNNER_TEMP is required}")"
+    owner="$(stat -c '%u:%g' -- "${runner_temp}")"
+    [[ "${owner}" =~ ^[1-9][0-9]*:[0-9]+$ ]] || die "unsafe runner ownership: ${owner}"
+    printf '%s\n' "${owner}"
+}
+
+validate_workspace_path() {
+    local path workspace
+    path="$(realpath -m -- "$1")"
+    workspace="$(realpath -m -- "${GITHUB_WORKSPACE:?GITHUB_WORKSPACE is required}")"
+
+    case "${path}" in
+        "${workspace}"|"${workspace}"/*) ;;
+        *) die "path is outside the runner workspace: ${path}" ;;
+    esac
+    printf '%s\n' "${path}"
+}
+
+container_workspace_path() {
+    local path workspace relative
+    path="$(validate_workspace_path "$1")"
+    workspace="$(realpath -m -- "${GITHUB_WORKSPACE}")"
+    if [[ "${path}" == "${workspace}" ]]; then
+        printf '/workspace\n'
+        return
+    fi
+    relative="${path#"${workspace}"/}"
+    printf '/workspace/%s\n' "${relative}"
+}
+
 prepare_ci_public_root() {
     local public_root runner_group
     public_root="$(realpath -m -- "$1")"
@@ -44,8 +76,12 @@ prepare_ci_public_root() {
     runner_group="$(runner_group_id)"
     umask 0002
     mkdir -p -- "${public_root}"
-    chgrp -- "${runner_group}" "${public_root}"
-    chmod 2775 -- "${public_root}"
+    if [[ "$(stat -c '%g' -- "${public_root}")" != "${runner_group}" ]]; then
+        chgrp -- "${runner_group}" "${public_root}"
+    fi
+    if [[ "$(stat -c '%a' -- "${public_root}")" != "2775" ]]; then
+        chmod 2775 -- "${public_root}"
+    fi
     [[ -d "${public_root}" && -w "${public_root}" ]] || \
         die "CI public root is not writable: ${public_root}"
 
@@ -66,6 +102,20 @@ restore_workspace() {
     owner="$(stat -c '%u:%g' -- "${runner_temp}")"
     [[ "${owner}" =~ ^[1-9][0-9]*:[0-9]+$ ]] || die "unsafe runner ownership: ${owner}"
     chown -R -- "${owner}" "${workspace}"
+}
+
+restore_workspace_with_container() {
+    local workspace image owner
+    workspace="$(validate_workspace_path "$1")"
+    image="$2"
+    owner="$(runner_owner)"
+
+    docker run --rm \
+        --user 0:0 \
+        --volume "${workspace}:/workspace" \
+        --entrypoint /bin/chown \
+        "${image}" \
+        -R -- "${owner}" /workspace
 }
 
 validate_pr_merge() {
@@ -225,6 +275,121 @@ PY
     printf '%s\n' "${repaired_wheels[@]}"
 }
 
+container_ci() {
+    local controller_dir source_dir build_variant torch_version dtk_package mode output_dir log_dir
+    controller_dir="$(resolve_dir "$1")"
+    source_dir="$(resolve_dir "$2")"
+    build_variant="$3"
+    torch_version="$4"
+    dtk_package="$5"
+    mode="$6"
+    output_dir="$(realpath -m -- "$7")"
+    log_dir="$(realpath -m -- "$8")"
+
+    case "${mode}" in
+        build|pr|nightly) ;;
+        *) die "unknown container CI mode: ${mode}" ;;
+    esac
+    case "${output_dir}" in "${source_dir}"/*) ;; *) die "invalid output directory" ;; esac
+    case "${log_dir}" in "${source_dir}"/*) ;; *) die "invalid log directory" ;; esac
+
+    mkdir -p -- "${log_dir}"
+    git config --global --add safe.directory "${source_dir}"
+    git config --global --add safe.directory "${source_dir}/${ROCSHMEM_PATH}"
+    checkout_rocshmem "${source_dir}" 2>&1 | tee "${log_dir}/submodule.log"
+    build_wheel \
+        "${source_dir}" "${build_variant}" "${torch_version}" "${dtk_package}" "${output_dir}" \
+        2>&1 | tee "${log_dir}/build.log"
+
+    case "${mode}" in
+        build) ;;
+        pr) run_pr_tests "${source_dir}" "${output_dir}" "${log_dir}" ;;
+        nightly) run_nightly_tests "${source_dir}" "${output_dir}" "${log_dir}" ;;
+    esac
+}
+
+run_ci_container() {
+    local controller_dir source_dir image build_variant torch_version dtk_package mode output_dir log_dir
+    local workspace container_controller container_source container_output container_log status nightly_temp
+    local -a docker_args
+    controller_dir="$(validate_workspace_path "$1")"
+    source_dir="$(validate_workspace_path "$2")"
+    image="$3"
+    build_variant="$4"
+    torch_version="$5"
+    dtk_package="$6"
+    mode="$7"
+    output_dir="$(validate_workspace_path "$8")"
+    log_dir="$(validate_workspace_path "$9")"
+    workspace="$(realpath -- "${GITHUB_WORKSPACE}")"
+    container_controller="$(container_workspace_path "${controller_dir}")"
+    container_source="$(container_workspace_path "${source_dir}")"
+    container_output="$(container_workspace_path "${output_dir}")"
+    container_log="$(container_workspace_path "${log_dir}")"
+
+    case "${mode}" in
+        build|pr|nightly) ;;
+        *) die "unknown container CI mode: ${mode}" ;;
+    esac
+    mkdir -p -- "${log_dir}"
+    docker_args=(
+        run --rm
+        --user 0:0
+        --workdir /workspace
+        --volume "${workspace}:/workspace"
+        --volume /opt/hyhal:/opt/hyhal:ro
+        --device /dev/kfd
+        --device /dev/dri
+        --group-add video
+        --shm-size 16g
+        --cap-add SYS_PTRACE
+        --env PIP_INDEX_URL
+        --env PIP_TRUSTED_HOST
+        --env CISMI_TIMEOUT
+        --env CI
+        --env FREE_BUILD_DIR
+        --env HYGON_AI_CI_TOKEN
+        --env GITHUB_REPOSITORY
+        --env GITHUB_RUN_ID
+        --env GITHUB_RUN_ATTEMPT
+        --env BUILD_VARIANT
+        --env TORCH_VERSION
+        --entrypoint /bin/bash
+    )
+    if [[ "${mode}" == "build" ]]; then
+        docker_args+=(--privileged)
+    fi
+
+    nightly_temp=""
+    if [[ "${mode}" == "nightly" ]]; then
+        [[ -n "${DEEPEP_NIGHTLY_CONFIG_ROOT:-}" ]] || die "DEEPEP_NIGHTLY_CONFIG_ROOT is required"
+        [[ -d "${DEEPEP_NIGHTLY_CONFIG_ROOT}" ]] || \
+            die "Nightly configuration root does not exist: ${DEEPEP_NIGHTLY_CONFIG_ROOT}"
+        nightly_temp="$(mktemp -d "${RUNNER_TEMP:?RUNNER_TEMP is required}/deepep-nightly.XXXXXX")"
+        cp -R -- "${DEEPEP_NIGHTLY_CONFIG_ROOT}/." "${nightly_temp}/"
+        docker_args+=(
+            --volume "${nightly_temp}:/ci/nightly:ro"
+            --env DEEPEP_TEST_PROFILE
+            --env DEEPEP_NIGHTLY_CONFIG_ROOT=/ci/nightly
+        )
+    fi
+
+    set +e
+    docker "${docker_args[@]}" "${image}" \
+        "${container_controller}/.github/scripts/hcu/ci.sh" container-ci \
+        "${container_controller}" "${container_source}" \
+        "${build_variant}" "${torch_version}" "${dtk_package}" "${mode}" \
+        "${container_output}" "${container_log}" \
+        2>&1 | tee "${log_dir}/container.log"
+    status="${PIPESTATUS[0]}"
+    set -e
+
+    if [[ -n "${nightly_temp}" ]]; then
+        rm -rf -- "${nightly_temp}"
+    fi
+    return "${status}"
+}
+
 run_pr_tests() {
     local source_dir wheel_dir log_dir hook
     source_dir="$(resolve_dir "$1")"
@@ -335,9 +500,12 @@ usage() {
 Usage:
   ci.sh prepare-ci-public-root <public-root>
   ci.sh restore-workspace <workspace>
+  ci.sh restore-workspace-with-container <workspace> <image>
   ci.sh validate-pr-merge <source-dir> <base-sha> <head-sha>
   ci.sh checkout-rocshmem <source-dir>
   ci.sh build-wheel <source-dir> <standard|shca> <torch-version> <dtk-package> <output-dir>
+  ci.sh container-ci <controller-dir> <source-dir> <standard|shca> <torch-version> <dtk-package> <build|pr|nightly> <output-dir> <log-dir>
+  ci.sh run-ci-container <controller-dir> <source-dir> <image> <standard|shca> <torch-version> <dtk-package> <build|pr|nightly> <output-dir> <log-dir>
   ci.sh run-pr-tests <source-dir> <wheel-dir> <log-dir>
   ci.sh run-nightly-tests <source-dir> <wheel-dir> <log-dir>
   ci.sh save-ci-output <source-dir> <destination-dir>
@@ -354,6 +522,10 @@ case "${command}" in
         [[ "$#" -eq 2 ]] || { usage; exit 2; }
         restore_workspace "$2"
         ;;
+    restore-workspace-with-container)
+        [[ "$#" -eq 3 ]] || { usage; exit 2; }
+        restore_workspace_with_container "$2" "$3"
+        ;;
     validate-pr-merge)
         [[ "$#" -eq 4 ]] || { usage; exit 2; }
         validate_pr_merge "$2" "$3" "$4"
@@ -365,6 +537,14 @@ case "${command}" in
     build-wheel)
         [[ "$#" -eq 6 ]] || { usage; exit 2; }
         build_wheel "$2" "$3" "$4" "$5" "$6"
+        ;;
+    container-ci)
+        [[ "$#" -eq 9 ]] || { usage; exit 2; }
+        container_ci "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"
+        ;;
+    run-ci-container)
+        [[ "$#" -eq 10 ]] || { usage; exit 2; }
+        run_ci_container "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10}"
         ;;
     run-pr-tests)
         [[ "$#" -eq 4 ]] || { usage; exit 2; }
