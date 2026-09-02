@@ -151,20 +151,43 @@ validate_pr_merge() {
 }
 
 checkout_rocshmem() {
-    local source_dir configured_url gitlink_sha token auth_header
+    local source_dir configured_url gitlink_sha recorded_gitlink_sha token auth_header
     source_dir="$(resolve_dir "$1")"
     token="${HYGON_AI_CI_TOKEN:?HYGON_AI_CI_TOKEN is required}"
 
     configured_url="$(git -C "${source_dir}" config -f .gitmodules --get "submodule.${ROCSHMEM_PATH}.url")"
     [[ "${configured_url}" == "${ROCSHMEM_URL}" ]] || die "unexpected rocSHMEM submodule URL: ${configured_url}"
 
-    gitlink_sha="$(git -C "${source_dir}" ls-tree HEAD "${ROCSHMEM_PATH}" | awk '{print $3}')"
+    if git -C "${source_dir}" cat-file -e 'HEAD^{commit}' >/dev/null 2>&1; then
+        recorded_gitlink_sha="$(
+            git -C "${source_dir}" ls-tree HEAD "${ROCSHMEM_PATH}" | awk '{print $3}'
+        )"
+        if [[ -n "${DEEPEP_ROCSHMEM_SHA:-}" ]]; then
+            [[ "${recorded_gitlink_sha}" == "${DEEPEP_ROCSHMEM_SHA}" ]] || \
+                die "rocSHMEM gitlink does not match the runner checkout"
+        fi
+        gitlink_sha="${recorded_gitlink_sha}"
+    else
+        gitlink_sha="${DEEPEP_ROCSHMEM_SHA:?DEEPEP_ROCSHMEM_SHA is required without source Git metadata}"
+    fi
     [[ "${gitlink_sha}" =~ ^[0-9a-f]{40}$ ]] || die "invalid rocSHMEM gitlink SHA: ${gitlink_sha}"
 
     auth_header="$(printf 'x-access-token:%s' "${token}" | base64 | tr -d '\r\n')"
-    git -C "${source_dir}" \
-        -c "http.https://github.com/.extraheader=Authorization: Basic ${auth_header}" \
-        submodule update --init --recursive -- "${ROCSHMEM_PATH}"
+    if git -C "${source_dir}" cat-file -e 'HEAD^{commit}' >/dev/null 2>&1; then
+        git -C "${source_dir}" \
+            -c "http.https://github.com/.extraheader=Authorization: Basic ${auth_header}" \
+            submodule update --init --recursive -- "${ROCSHMEM_PATH}"
+    else
+        rm -rf -- "${source_dir:?}/${ROCSHMEM_PATH}"
+        git -c "http.https://github.com/.extraheader=Authorization: Basic ${auth_header}" \
+            clone --no-checkout -- "${ROCSHMEM_URL}" "${source_dir}/${ROCSHMEM_PATH}"
+        git -C "${source_dir}/${ROCSHMEM_PATH}" \
+            -c "http.https://github.com/.extraheader=Authorization: Basic ${auth_header}" \
+            checkout --detach "${gitlink_sha}"
+        git -C "${source_dir}/${ROCSHMEM_PATH}" \
+            -c "http.https://github.com/.extraheader=Authorization: Basic ${auth_header}" \
+            submodule update --init --recursive
+    fi
 
     [[ "$(git -C "${source_dir}/${ROCSHMEM_PATH}" rev-parse HEAD)" == "${gitlink_sha}" ]] || \
         die "rocSHMEM checkout does not match the recorded gitlink"
@@ -260,7 +283,17 @@ build_wheel() {
     else
         die "cannot derive the DTK version from ${dtk_package}"
     fi
-    git_commit="$(git -C "${source_dir}" rev-parse --short=6 HEAD)"
+    if git -C "${source_dir}" cat-file -e 'HEAD^{commit}' >/dev/null 2>&1; then
+        git_commit="$(git -C "${source_dir}" rev-parse --short=6 HEAD)"
+        if [[ -n "${DEEPEP_SOURCE_SHA:-}" ]]; then
+            [[ "$(git -C "${source_dir}" rev-parse HEAD)" == "${DEEPEP_SOURCE_SHA}" ]] || \
+                die "source commit does not match the runner checkout"
+        fi
+    else
+        [[ "${DEEPEP_SOURCE_SHA:-}" =~ ^[0-9a-f]{40}$ ]] || \
+            die "DEEPEP_SOURCE_SHA is required without source Git metadata"
+        git_commit="${DEEPEP_SOURCE_SHA:0:6}"
+    fi
 
     CIUpload REPAIR \
         --dtk_version "${dtk_version}" \
@@ -327,7 +360,7 @@ container_ci() {
 run_ci_container() {
     local controller_dir source_dir image build_variant torch_version dtk_package mode output_dir log_dir
     local workspace container_controller container_source container_output container_log
-    local status copy_status nightly_temp container_name host_container_log
+    local status copy_status nightly_temp container_name host_container_log source_sha rocshmem_sha
     local -a docker_args
     controller_dir="$(validate_workspace_path "$1")"
     source_dir="$(validate_workspace_path "$2")"
@@ -339,6 +372,10 @@ run_ci_container() {
     output_dir="$(validate_workspace_path "$8")"
     log_dir="$(validate_workspace_path "$9")"
     workspace="$(realpath -- "${GITHUB_WORKSPACE}")"
+    source_sha="$(git -C "${source_dir}" rev-parse HEAD)"
+    rocshmem_sha="$(git -C "${source_dir}" ls-tree HEAD "${ROCSHMEM_PATH}" | awk '{print $3}')"
+    [[ "${source_sha}" =~ ^[0-9a-f]{40}$ ]] || die "invalid source SHA: ${source_sha}"
+    [[ "${rocshmem_sha}" =~ ^[0-9a-f]{40}$ ]] || die "invalid rocSHMEM gitlink SHA: ${rocshmem_sha}"
     container_controller="/workspace/${controller_dir#"${workspace}"/}"
     container_source="/workspace/${source_dir#"${workspace}"/}"
     container_output="/workspace/${output_dir#"${workspace}"/}"
@@ -369,6 +406,8 @@ run_ci_container() {
         --env GITHUB_RUN_ATTEMPT
         --env BUILD_VARIANT
         --env TORCH_VERSION
+        --env "DEEPEP_SOURCE_SHA=${source_sha}"
+        --env "DEEPEP_ROCSHMEM_SHA=${rocshmem_sha}"
         --entrypoint /bin/bash
     )
     if [[ "${mode}" == "build" ]]; then
