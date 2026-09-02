@@ -206,6 +206,7 @@ checkout_rocshmem() {
 
     auth_header="$(printf 'x-access-token:%s' "${token}" | base64 | tr -d '\r\n')"
     if git -C "${source_dir}" cat-file -e 'HEAD^{commit}' >/dev/null 2>&1; then
+        rm -rf -- "${source_dir:?}/${ROCSHMEM_PATH}"
         git -C "${source_dir}" \
             -c "http.https://github.com/.extraheader=Authorization: Basic ${auth_header}" \
             submodule update --init --recursive -- "${ROCSHMEM_PATH}"
