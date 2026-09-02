@@ -52,6 +52,7 @@ jobs:
       IMAGE: ${{ matrix.image }}
       BUILD_VARIANT: ${{ matrix.build_variant }}
       TORCH_VERSION: ${{ matrix.torch_version }}
+      DEEPEP_SOURCE_REF: ${{ github.sha }}
       DTK_PACKAGE: ${{ matrix.dtk_package }}
       CI_PUBLIC_ROOT: /ci_public/deepep-das/runs
       CI_PUBLIC_OUTPUT_DIR: >-

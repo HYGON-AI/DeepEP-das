@@ -150,6 +150,38 @@ validate_pr_merge() {
     append_summary "- PR merge ref: verified against base and head SHAs"
 }
 
+prepare_container_source() {
+    local source_dir source_ref repository token auth_header source_url source_sha
+    source_dir="$(resolve_dir "$1")"
+    source_ref="${DEEPEP_SOURCE_REF:?DEEPEP_SOURCE_REF is required}"
+    repository="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
+    token="${HYGON_AI_CI_TOKEN:?HYGON_AI_CI_TOKEN is required}"
+
+    [[ "${repository}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || \
+        die "invalid GitHub repository: ${repository}"
+    [[ "${source_ref}" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$ ]] || \
+        die "invalid source ref: ${source_ref}"
+    source_url="https://github.com/${repository}.git"
+    auth_header="$(printf 'x-access-token:%s' "${token}" | base64 | tr -d '\r\n')"
+
+    rm -rf -- "${source_dir:?}/.git"
+    git -C "${source_dir}" init --quiet
+    git -C "${source_dir}" remote add origin "${source_url}"
+    git -C "${source_dir}" \
+        -c "http.https://github.com/.extraheader=Authorization: Basic ${auth_header}" \
+        fetch --no-tags --depth=2 origin -- "${source_ref}"
+    git -C "${source_dir}" checkout --force --detach FETCH_HEAD
+    git -C "${source_dir}" clean -ffd
+
+    source_sha="$(git -C "${source_dir}" rev-parse HEAD)"
+    [[ "${source_sha}" =~ ^[0-9a-f]{40}$ ]] || die "invalid checked-out source SHA: ${source_sha}"
+    if [[ "${source_ref}" =~ ^[0-9a-f]{40}$ ]]; then
+        [[ "${source_sha}" == "${source_ref}" ]] || die "source checkout does not match the requested commit"
+    fi
+    unset token auth_header
+    append_summary "- source ref: checked out and verified inside the build container"
+}
+
 checkout_rocshmem() {
     local source_dir configured_url gitlink_sha recorded_gitlink_sha token auth_header
     source_dir="$(resolve_dir "$1")"
@@ -342,9 +374,16 @@ container_ci() {
     case "${output_dir}" in "${source_dir}"/*) ;; *) die "invalid output directory" ;; esac
     case "${log_dir}" in "${source_dir}"/*) ;; *) die "invalid log directory" ;; esac
 
+    prepare_container_source "${source_dir}"
     mkdir -p -- "${log_dir}"
     git config --global --add safe.directory "${source_dir}"
     git config --global --add safe.directory "${source_dir}/${ROCSHMEM_PATH}"
+    git -C "${source_dir}" rev-parse HEAD > "${log_dir}/source-sha.log"
+    if [[ -n "${DEEPEP_PR_BASE_SHA:-}" || -n "${DEEPEP_PR_HEAD_SHA:-}" ]]; then
+        [[ -n "${DEEPEP_PR_BASE_SHA:-}" && -n "${DEEPEP_PR_HEAD_SHA:-}" ]] || \
+            die "both PR base and head SHAs are required"
+        validate_pr_merge "${source_dir}" "${DEEPEP_PR_BASE_SHA}" "${DEEPEP_PR_HEAD_SHA}"
+    fi
     checkout_rocshmem "${source_dir}" 2>&1 | tee "${log_dir}/submodule.log"
     build_wheel \
         "${source_dir}" "${build_variant}" "${torch_version}" "${dtk_package}" "${output_dir}" \
@@ -360,7 +399,7 @@ container_ci() {
 run_ci_container() {
     local controller_dir source_dir image build_variant torch_version dtk_package mode output_dir log_dir
     local workspace container_controller container_source container_output container_log
-    local status copy_status nightly_temp container_name host_container_log source_sha rocshmem_sha
+    local status copy_status nightly_temp container_name host_container_log
     local -a docker_args
     controller_dir="$(validate_workspace_path "$1")"
     source_dir="$(validate_workspace_path "$2")"
@@ -372,10 +411,6 @@ run_ci_container() {
     output_dir="$(validate_workspace_path "$8")"
     log_dir="$(validate_workspace_path "$9")"
     workspace="$(realpath -- "${GITHUB_WORKSPACE}")"
-    source_sha="$(git -C "${source_dir}" rev-parse HEAD)"
-    rocshmem_sha="$(git -C "${source_dir}" ls-tree HEAD "${ROCSHMEM_PATH}" | awk '{print $3}')"
-    [[ "${source_sha}" =~ ^[0-9a-f]{40}$ ]] || die "invalid source SHA: ${source_sha}"
-    [[ "${rocshmem_sha}" =~ ^[0-9a-f]{40}$ ]] || die "invalid rocSHMEM gitlink SHA: ${rocshmem_sha}"
     container_controller="/workspace/${controller_dir#"${workspace}"/}"
     container_source="/workspace/${source_dir#"${workspace}"/}"
     container_output="/workspace/${output_dir#"${workspace}"/}"
@@ -406,8 +441,9 @@ run_ci_container() {
         --env GITHUB_RUN_ATTEMPT
         --env BUILD_VARIANT
         --env TORCH_VERSION
-        --env "DEEPEP_SOURCE_SHA=${source_sha}"
-        --env "DEEPEP_ROCSHMEM_SHA=${rocshmem_sha}"
+        --env DEEPEP_SOURCE_REF
+        --env DEEPEP_PR_BASE_SHA
+        --env DEEPEP_PR_HEAD_SHA
         --entrypoint /bin/bash
     )
     if [[ "${mode}" == "build" ]]; then
@@ -547,6 +583,9 @@ save_ci_output() {
     git_sha="unknown"
     if git -C "${source_dir}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         git_sha="$(git -C "${source_dir}" rev-parse HEAD)"
+    elif [[ -f "${source_dir}/ci-logs/source-sha.log" ]]; then
+        git_sha="$(tr -d '\r\n' < "${source_dir}/ci-logs/source-sha.log")"
+        [[ "${git_sha}" =~ ^[0-9a-f]{40}$ ]] || die "invalid saved source SHA: ${git_sha}"
     fi
     {
         printf 'repository=%s\n' "${GITHUB_REPOSITORY:-unknown}"

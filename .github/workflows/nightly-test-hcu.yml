@@ -67,6 +67,7 @@ jobs:
         'harbor.sourcefind.cn:5443/dcu/admin/base/dev:rockylinux8.6-mpi5.0-gcc10.3-cmake3.29-py3.10-mkl2020.4.304' }}
       BUILD_VARIANT: ${{ inputs.build_variant }}
       TORCH_VERSION: ${{ inputs.torch_version }}
+      DEEPEP_SOURCE_REF: ${{ inputs.ref }}
       DTK_PACKAGE: >-
         ${{ inputs.build_variant == 'shca' &&
         'http://10.16.1.201:8000/dtk-pkg/dtk26.04/DTK-26.04-rc4-ubuntu20.04-x86_64.tar.gz' ||
