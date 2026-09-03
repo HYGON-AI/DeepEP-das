@@ -76,13 +76,12 @@ self_docker_container() {
 }
 
 prepare_ci_public_root() {
-    local public_root runner_group
+    local public_root configured_root runner_group
     public_root="$(realpath -m -- "$1")"
+    configured_root="$(realpath -m -- "${CI_PUBLIC_ROOT:?CI_PUBLIC_ROOT is required}")"
 
-    case "${public_root}" in
-        /ci_public/deepep-das/*) ;;
-        *) die "refusing to prepare unexpected CI public root: ${public_root}" ;;
-    esac
+    [[ "${public_root}" == "${configured_root}" ]] || \
+        die "refusing to prepare unexpected CI public root: ${public_root}"
 
     runner_group="$(runner_group_id)"
     umask 0002
@@ -595,7 +594,7 @@ save_ci_output() {
     local source_dir public_root destination parent_dir destination_name staging git_sha runner_group
     local -a wheels
     source_dir="$(realpath -m -- "$1")"
-    public_root="$(realpath -- "${CI_PUBLIC_ROOT:-/ci_public}")"
+    public_root="$(realpath -- "${CI_PUBLIC_ROOT:?CI_PUBLIC_ROOT is required}")"
     destination="$(realpath -m -- "$2")"
 
     [[ -d "${public_root}" && -w "${public_root}" ]] || \
