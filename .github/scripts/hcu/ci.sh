@@ -503,18 +503,8 @@ run_ci_container() {
         nightly_temp="$(mktemp -d "${RUNNER_TEMP:?RUNNER_TEMP is required}/deepep-nightly.XXXXXX")"
         cp -R -- "${DEEPEP_NIGHTLY_CONFIG_ROOT}/." "${nightly_temp}/"
         docker_args+=(
-            --network host
-            --volume /dev/infiniband:/dev/infiniband
-            --ulimit memlock=-1:-1
-            --cap-add IPC_LOCK
             --env DEEPEP_TEST_PROFILE
-            --env DEEPEP_NIGHTLY_RUNNER_LABEL
             --env DEEPEP_NIGHTLY_CONFIG_ROOT=/tmp/ci-nightly
-            --env MASTER_ADDR
-            --env MASTER_PORT
-            --env WORLD_SIZE
-            --env RANK
-            --env RUNNER_NAME
         )
     fi
 
