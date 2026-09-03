@@ -59,4 +59,8 @@ run_single_node_test() {
 } | tee "${log_dir}/single-node-scope.log"
 
 run_single_node_test test_intranode 8361
+
+# Match the heap size used by the repository's existing HCU test environment.
+# The low-latency defaults require more than rocSHMEM's 1 GiB default heap.
+export ROCSHMEM_HEAP_SIZE=3737418240
 run_single_node_test test_low_latency 8362
