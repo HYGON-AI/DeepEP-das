@@ -63,20 +63,18 @@ jobs:
     env:
       IMAGE: >-
         ${{ inputs.build_variant == 'shca' &&
-        '10.16.1.152:5000/jenkins/base_env/shca17:ubuntu22.04-dtk2604-py3.10-dtk2604' ||
-        'harbor.sourcefind.cn:5443/dcu/admin/base/dev:rockylinux8.6-mpi5.0-gcc10.3-cmake3.29-py3.10-mkl2020.4.304' }}
+        vars.DEEPEP_CI_SHCA_IMAGE || vars.DEEPEP_CI_STANDARD_IMAGE }}
       BUILD_VARIANT: ${{ inputs.build_variant }}
       TORCH_VERSION: ${{ inputs.torch_version }}
       DEEPEP_SOURCE_REF: ${{ inputs.ref }}
       DTK_PACKAGE: >-
         ${{ inputs.build_variant == 'shca' &&
-        'http://10.16.1.201:8000/dtk-pkg/dtk26.04/DTK-26.04-rc4-ubuntu20.04-x86_64.tar.gz' ||
-        'http://10.16.1.201:8000/dtk-pkg/dtk26.04/DTK-26.04-rc4-centos8-x86_64.tar.gz' }}
+        vars.DEEPEP_CI_SHCA_DTK_PACKAGE || vars.DEEPEP_CI_STANDARD_DTK_PACKAGE }}
       DEEPEP_TEST_PROFILE: ${{ inputs.test_profile }}
-      DEEPEP_NIGHTLY_CONFIG_ROOT: /ci_public/deepep-das/nightly
-      CI_PUBLIC_ROOT: /ci_public/deepep-das/runs
+      DEEPEP_NIGHTLY_CONFIG_ROOT: ${{ vars.DEEPEP_CI_NIGHTLY_CONFIG_ROOT }}
+      CI_PUBLIC_ROOT: ${{ vars.DEEPEP_CI_PUBLIC_ROOT }}
       CI_PUBLIC_OUTPUT_DIR: >-
-        /ci_public/deepep-das/runs/${{ github.run_id }}/attempt-${{ github.run_attempt
+        ${{ vars.DEEPEP_CI_PUBLIC_ROOT }}/${{ github.run_id }}/attempt-${{ github.run_attempt
         }}/nightly-${{ inputs.build_variant }}-${{ inputs.test_profile }}-torch-${{
         inputs.torch_version }}
     steps:
