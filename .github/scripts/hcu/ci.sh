@@ -392,8 +392,16 @@ container_ci() {
 
     case "${mode}" in
         build) ;;
-        pr) run_pr_tests "${source_dir}" "${output_dir}" "${log_dir}" ;;
-        nightly) run_nightly_tests "${source_dir}" "${output_dir}" "${log_dir}" ;;
+        pr)
+            # build_wheel runs on the left side of a tee pipeline, so reload the
+            # DTK runtime environment in this parent shell before HCU tests.
+            source_dtk
+            run_pr_tests "${source_dir}" "${output_dir}" "${log_dir}"
+            ;;
+        nightly)
+            source_dtk
+            run_nightly_tests "${source_dir}" "${output_dir}" "${log_dir}"
+            ;;
     esac
 }
 
