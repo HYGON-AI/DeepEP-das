@@ -258,16 +258,39 @@ source_dtk() {
 }
 
 install_build_dependencies() {
-    local torch_version="$1"
-    python3 -m pip install --no-cache-dir \
-        "torch==${torch_version}" \
-        pyyaml \
-        hypothesis \
-        ninja \
-        monkeytype \
-        wheel \
-        setuptools \
+    local torch_version="$1" use_preinstalled_runtime
+    local -a dependencies=(
+        pyyaml
+        hypothesis
+        ninja
+        monkeytype
+        wheel
+        setuptools
         ciupload
+    )
+    use_preinstalled_runtime="${DEEPEP_USE_PREINSTALLED_RUNTIME:-false}"
+    case "${use_preinstalled_runtime}" in
+        true) ;;
+        false) dependencies=("torch==${torch_version}" "${dependencies[@]}") ;;
+        *) die "DEEPEP_USE_PREINSTALLED_RUNTIME must be true or false" ;;
+    esac
+    python3 -m pip install --no-cache-dir "${dependencies[@]}"
+}
+
+verify_torch_runtime() {
+    local torch_version="$1"
+    python3 - "${torch_version}" <<'PY'
+import sys
+
+import torch
+
+expected = sys.argv[1]
+actual = torch.__version__
+if actual.split("+", 1)[0] != expected:
+    raise SystemExit(f"expected Torch {expected}, found {actual}")
+print(f"Torch runtime: {actual}")
+print(f"HIP runtime: {torch.version.hip}")
+PY
 }
 
 build_wheel() {
@@ -290,9 +313,19 @@ build_wheel() {
         *) die "output directory must be inside the source checkout: ${output_dir}" ;;
     esac
 
-    install_dtk "${dtk_package}"
-    source_dtk
+    case "${DEEPEP_USE_PREINSTALLED_RUNTIME:-false}" in
+        true)
+            [[ -f /opt/dtk/env.sh ]] || die "preinstalled DTK environment file is missing"
+            source_dtk
+            ;;
+        false)
+            install_dtk "${dtk_package}"
+            source_dtk
+            ;;
+        *) die "DEEPEP_USE_PREINSTALLED_RUNTIME must be true or false" ;;
+    esac
     install_build_dependencies "${torch_version}"
+    verify_torch_runtime "${torch_version}"
 
     rm -rf -- \
         "${source_dir}/build_" \
@@ -344,10 +377,12 @@ build_wheel() {
     (
         cd /tmp
         python3 - <<'PY'
+from importlib.metadata import version
+
 import deep_ep
 
 print(f"deep_ep loaded from: {deep_ep.__file__}")
-print(f"deep_ep version: {getattr(deep_ep, '__version__', 'unknown')}")
+print(f"deep-ep distribution version: {version('deep-ep')}")
 PY
     )
 
@@ -450,6 +485,7 @@ run_ci_container() {
         --env GITHUB_RUN_ATTEMPT
         --env BUILD_VARIANT
         --env TORCH_VERSION
+        --env DEEPEP_USE_PREINSTALLED_RUNTIME
         --env DEEPEP_SOURCE_REF
         --env DEEPEP_PR_BASE_SHA
         --env DEEPEP_PR_HEAD_SHA
