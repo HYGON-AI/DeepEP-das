@@ -102,13 +102,14 @@ jobs:
     timeout-minutes: 180
     env:
       IMAGE: >-
-        harbor.sourcefind.cn:5443/dcu/admin/base/dev:rockylinux8.6-mpi5.0-gcc10.3-cmake3.29-py3.10-mkl2020.4.304
+        harbor.sourcefind.cn:5443/dcu/admin/base/sglang:0.5.12-ubuntu22.04-dtk2604-py3.10
       BUILD_VARIANT: standard
       TORCH_VERSION: "2.10.0"
+      DEEPEP_USE_PREINSTALLED_RUNTIME: "true"
       DEEPEP_SOURCE_REF: ${{ needs.authorize.outputs.source_ref }}
       DEEPEP_PR_BASE_SHA: ${{ needs.authorize.outputs.base_sha }}
       DEEPEP_PR_HEAD_SHA: ${{ needs.authorize.outputs.head_sha }}
-      DTK_PACKAGE: http://10.16.1.201:8000/dtk-pkg/dtk26.04/DTK-26.04-rc4-centos8-x86_64.tar.gz
+      DTK_PACKAGE: dtk26.04-preinstalled
       CI_PUBLIC_ROOT: /ci_public/deepep-das/runs
       CI_PUBLIC_OUTPUT_DIR: >-
         /ci_public/deepep-das/runs/${{ github.run_id }}/attempt-${{ github.run_attempt
