@@ -54,31 +54,49 @@ env:
 
 jobs:
   test:
-    name: ${{ inputs.build_variant }} / ${{ inputs.test_profile }}
+    name: ${{ inputs.build_variant }} / ${{ inputs.test_profile }} / ${{ matrix.runner_label }}
     if: vars.DEEPEP_HCU_NIGHTLY_ENABLED == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner_label: nmz2
+            node_rank: 0
+          - runner_label: nmz3
+            node_rank: 1
     runs-on:
       group: ci-general
-      labels: [self-hosted, ci, bw1100]
+      labels: [self-hosted, ci, bw1100, "${{ matrix.runner_label }}"]
     timeout-minutes: 360
     env:
       IMAGE: >-
-        ${{ inputs.build_variant == 'shca' &&
+        ${{ inputs.build_variant == 'standard' && inputs.torch_version == '2.10.0' &&
+        'harbor.sourcefind.cn:5443/dcu/admin/base/sglang:0.5.12-ubuntu22.04-dtk2604-py3.10' ||
+        inputs.build_variant == 'shca' &&
         '10.16.1.152:5000/jenkins/base_env/shca17:ubuntu22.04-dtk2604-py3.10-dtk2604' ||
         'harbor.sourcefind.cn:5443/dcu/admin/base/dev:rockylinux8.6-mpi5.0-gcc10.3-cmake3.29-py3.10-mkl2020.4.304' }}
       BUILD_VARIANT: ${{ inputs.build_variant }}
       TORCH_VERSION: ${{ inputs.torch_version }}
+      DEEPEP_USE_PREINSTALLED_RUNTIME: >-
+        ${{ inputs.build_variant == 'standard' && inputs.torch_version == '2.10.0' &&
+        'true' || 'false' }}
       DEEPEP_SOURCE_REF: ${{ inputs.ref }}
       DTK_PACKAGE: >-
-        ${{ inputs.build_variant == 'shca' &&
+        ${{ inputs.build_variant == 'standard' && inputs.torch_version == '2.10.0' &&
+        'dtk26.04-preinstalled' || inputs.build_variant == 'shca' &&
         'http://10.16.1.201:8000/dtk-pkg/dtk26.04/DTK-26.04-rc4-ubuntu20.04-x86_64.tar.gz' ||
         'http://10.16.1.201:8000/dtk-pkg/dtk26.04/DTK-26.04-rc4-centos8-x86_64.tar.gz' }}
       DEEPEP_TEST_PROFILE: ${{ inputs.test_profile }}
       DEEPEP_NIGHTLY_CONFIG_ROOT: /ci_public/deepep-das/nightly
+      DEEPEP_NIGHTLY_RUNNER_LABEL: ${{ matrix.runner_label }}
+      MASTER_ADDR: nmz2
+      WORLD_SIZE: "2"
+      RANK: ${{ matrix.node_rank }}
       CI_PUBLIC_ROOT: /ci_public/deepep-das/runs
       CI_PUBLIC_OUTPUT_DIR: >-
         /ci_public/deepep-das/runs/${{ github.run_id }}/attempt-${{ github.run_attempt
-        }}/nightly-${{ inputs.build_variant }}-${{ inputs.test_profile }}-torch-${{
-        inputs.torch_version }}
+        }}/nightly-${{ inputs.build_variant }}-${{ inputs.test_profile }}-${{
+        matrix.runner_label }}-torch-${{ inputs.torch_version }}
     steps:
       - name: Normalize workspace ownership before checkout
         shell: bash
@@ -118,7 +136,7 @@ jobs:
       - name: Checkout trusted controller
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
-          ref: main
+          ref: ${{ github.sha }}
           path: controller
           fetch-depth: 1
           submodules: false
@@ -144,6 +162,7 @@ jobs:
         env:
           HYGON_AI_CI_TOKEN: ${{ secrets.HYGON_AI_CI_TOKEN }}
         run: |
+          export MASTER_PORT="$((20000 + GITHUB_RUN_ID % 20000))"
           bash controller/.github/scripts/hcu/ci.sh \
             run-ci-container controller source "${IMAGE}" \
             "${BUILD_VARIANT}" "${TORCH_VERSION}" "${DTK_PACKAGE}" nightly \

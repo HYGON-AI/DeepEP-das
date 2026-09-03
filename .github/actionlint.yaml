@@ -3,3 +3,5 @@ self-hosted-runner:
   labels:
     - ci
     - bw1100
+    - nmz2
+    - nmz3
