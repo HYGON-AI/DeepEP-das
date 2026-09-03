@@ -1,0 +1,180 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: MIT
+---
+
+name: Nightly Test HCU
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag, or commit to test
+        required: true
+        default: main
+        type: string
+      torch_version:
+        description: PyTorch version
+        required: true
+        default: "2.10.0"
+        type: choice
+        options:
+          - "2.10.0"
+          - "2.11.0"
+      build_variant:
+        description: Communication backend build variant
+        required: true
+        default: standard
+        type: choice
+        options:
+          - standard
+          - shca
+      test_profile:
+        description: Cross-node test profile
+        required: true
+        default: all
+        type: choice
+        options:
+          - internode
+          - low-latency
+          - all
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deepep-nightly-hcu-${{ inputs.ref }}-${{ inputs.build_variant }}
+  cancel-in-progress: false
+
+env:
+  PIP_INDEX_URL: http://10.16.1.201:9929/nightly/dtk2604/+simple/
+  PIP_TRUSTED_HOST: 10.16.1.201
+  CISMI_TIMEOUT: "3600"
+  CI: "false"
+  FREE_BUILD_DIR: "0"
+
+jobs:
+  test:
+    name: ${{ inputs.build_variant }} / ${{ inputs.test_profile }}
+    if: vars.DEEPEP_HCU_NIGHTLY_ENABLED == 'true'
+    runs-on:
+      group: ci-general
+      labels: [self-hosted, ci, bw1100]
+    timeout-minutes: 360
+    env:
+      IMAGE: >-
+        ${{ inputs.build_variant == 'shca' &&
+        '10.16.1.152:5000/jenkins/base_env/shca17:ubuntu22.04-dtk2604-py3.10-dtk2604' ||
+        'harbor.sourcefind.cn:5443/dcu/admin/base/dev:rockylinux8.6-mpi5.0-gcc10.3-cmake3.29-py3.10-mkl2020.4.304' }}
+      BUILD_VARIANT: ${{ inputs.build_variant }}
+      TORCH_VERSION: ${{ inputs.torch_version }}
+      DEEPEP_SOURCE_REF: ${{ inputs.ref }}
+      DTK_PACKAGE: >-
+        ${{ inputs.build_variant == 'shca' &&
+        'http://10.16.1.201:8000/dtk-pkg/dtk26.04/DTK-26.04-rc4-ubuntu20.04-x86_64.tar.gz' ||
+        'http://10.16.1.201:8000/dtk-pkg/dtk26.04/DTK-26.04-rc4-centos8-x86_64.tar.gz' }}
+      DEEPEP_TEST_PROFILE: ${{ inputs.test_profile }}
+      DEEPEP_NIGHTLY_CONFIG_ROOT: /ci_public/deepep-das/nightly
+      CI_PUBLIC_ROOT: /ci_public/deepep-das/runs
+      CI_PUBLIC_OUTPUT_DIR: >-
+        /ci_public/deepep-das/runs/${{ github.run_id }}/attempt-${{ github.run_attempt
+        }}/nightly-${{ inputs.build_variant }}-${{ inputs.test_profile }}-torch-${{
+        inputs.torch_version }}
+    steps:
+      - name: Normalize workspace ownership before checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          workspace="$(realpath -m -- "${GITHUB_WORKSPACE}")"
+          runner_temp="$(realpath -m -- "${RUNNER_TEMP}")"
+          work_root="$(dirname -- "${runner_temp}")"
+          case "${workspace}" in "${work_root}"/*/*) ;; *) exit 1 ;; esac
+          runner_owner="$(stat -c '%u:%g' -- "${RUNNER_TEMP}")"
+          [[ "${runner_owner}" =~ ^[1-9][0-9]*:[0-9]+$ ]]
+          runner_container=""
+          if [[ -f /.dockerenv ]]; then
+            current_hostname="$(hostname)"
+            if docker inspect --type container "${current_hostname}" >/dev/null 2>&1; then
+              runner_container="${current_hostname}"
+            else
+              while IFS= read -r container_id; do
+                container_hostname="$(docker inspect --format '{{.Config.Hostname}}' "${container_id}")"
+                if [[ "${container_hostname}" == "${current_hostname}" ]]; then
+                  runner_container="${container_id}"
+                  break
+                fi
+              done < <(docker ps --quiet)
+            fi
+          fi
+          if [[ -n "${runner_container}" ]]; then
+            docker exec --user 0 "${runner_container}" \
+              /bin/chown -R -- "${runner_owner}" "${workspace}"
+          else
+            docker run --rm --user 0:0 \
+              --volume "${workspace}:/workspace" \
+              --entrypoint /bin/chown \
+              "${IMAGE}" -R -- "${runner_owner}" /workspace
+          fi
+
+      - name: Checkout trusted controller
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: main
+          path: controller
+          fetch-depth: 1
+          submodules: false
+          persist-credentials: false
+
+      - name: Checkout selected source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ inputs.ref }}
+          path: source
+          fetch-depth: 0
+          submodules: false
+          persist-credentials: false
+
+      - name: Prepare CI public root
+        shell: bash
+        run: >-
+          bash controller/.github/scripts/hcu/ci.sh
+          prepare-ci-public-root "${CI_PUBLIC_ROOT}"
+
+      - name: Build and run Nightly checks in container
+        shell: bash
+        env:
+          HYGON_AI_CI_TOKEN: ${{ secrets.HYGON_AI_CI_TOKEN }}
+        run: |
+          bash controller/.github/scripts/hcu/ci.sh \
+            run-ci-container controller source "${IMAGE}" \
+            "${BUILD_VARIANT}" "${TORCH_VERSION}" "${DTK_PACKAGE}" nightly \
+            source/final source/ci-logs
+
+      - name: Restore workspace ownership
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f controller/.github/scripts/hcu/ci.sh ]]; then
+            bash controller/.github/scripts/hcu/ci.sh \
+              restore-workspace-with-container "${GITHUB_WORKSPACE}" "${IMAGE}"
+          else
+            workspace="$(realpath -m -- "${GITHUB_WORKSPACE}")"
+            runner_owner="$(stat -c '%u:%g' -- "${RUNNER_TEMP}")"
+            [[ "${runner_owner}" =~ ^[1-9][0-9]*:[0-9]+$ ]]
+            docker run --rm --user 0:0 \
+              --volume "${workspace}:/workspace" \
+              --entrypoint /bin/chown \
+              "${IMAGE}" -R -- "${runner_owner}" /workspace
+          fi
+
+      - name: Save wheel and Nightly logs to CI public directory
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f controller/.github/scripts/hcu/ci.sh ]]; then
+            bash controller/.github/scripts/hcu/ci.sh \
+              save-ci-output source "${CI_PUBLIC_OUTPUT_DIR}"
+          else
+            echo "CI controller was not checked out; no output is available to save."
+          fi
