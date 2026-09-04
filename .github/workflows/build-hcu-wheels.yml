@@ -8,13 +8,23 @@ on:
   push:
     branches:
       - ci-release
+  pull_request_target:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+    paths:
+      - "deep_ep/**"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: deepep-hcu-wheels-${{ github.ref }}
+  group: deepep-hcu-wheels-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -25,8 +35,68 @@ env:
   FREE_BUILD_DIR: "0"
 
 jobs:
+  authorize:
+    name: Authorize build source
+    runs-on:
+      group: ci-general
+      labels: [self-hosted, ci, bw1100]
+    timeout-minutes: 5
+    outputs:
+      should_run: ${{ steps.authorize.outputs.should_run }}
+      controller_ref: ${{ steps.authorize.outputs.controller_ref }}
+      source_ref: ${{ steps.authorize.outputs.source_ref }}
+      base_sha: ${{ steps.authorize.outputs.base_sha }}
+      head_sha: ${{ steps.authorize.outputs.head_sha }}
+      build_mode: ${{ steps.authorize.outputs.build_mode }}
+    steps:
+      - name: Authorize source ref
+        id: authorize
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REPOSITORY: ${{ github.repository }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_DRAFT: ${{ github.event.pull_request.draft }}
+          WORKFLOW_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "${EVENT_NAME}" != "pull_request_target" ]]; then
+            {
+              echo "should_run=true"
+              echo "controller_ref=${WORKFLOW_SHA}"
+              echo "source_ref=${WORKFLOW_SHA}"
+              echo "base_sha="
+              echo "head_sha="
+              echo "build_mode=build"
+            } >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          if [[ "${HEAD_REPOSITORY}" != "${BASE_REPOSITORY}" ]]; then
+            echo "Fork PR execution is disabled until an isolated approval path is configured." >&2
+            exit 1
+          fi
+
+          should_run=true
+          if [[ "${PR_DRAFT}" == "true" ]]; then
+            should_run=false
+          fi
+          {
+            echo "should_run=${should_run}"
+            echo "controller_ref=${BASE_SHA}"
+            echo "source_ref=refs/pull/${PR_NUMBER}/merge"
+            echo "base_sha=${BASE_SHA}"
+            echo "head_sha=${HEAD_SHA}"
+            echo "build_mode=pr-build"
+          } >> "${GITHUB_OUTPUT}"
+
   build:
     name: ${{ matrix.build_variant }} / torch-${{ matrix.torch_version }}
+    needs: authorize
+    if: needs.authorize.outputs.should_run == 'true'
     runs-on:
       group: ci-general
       labels: [self-hosted, ci, bw1100]
@@ -51,7 +121,10 @@ jobs:
       IMAGE: ${{ matrix.image }}
       BUILD_VARIANT: ${{ matrix.build_variant }}
       TORCH_VERSION: ${{ matrix.torch_version }}
-      DEEPEP_SOURCE_REF: ${{ github.sha }}
+      DEEPEP_SOURCE_REF: ${{ needs.authorize.outputs.source_ref }}
+      DEEPEP_PR_BASE_SHA: ${{ needs.authorize.outputs.base_sha }}
+      DEEPEP_PR_HEAD_SHA: ${{ needs.authorize.outputs.head_sha }}
+      BUILD_MODE: ${{ needs.authorize.outputs.build_mode }}
       DTK_PACKAGE: ${{ matrix.dtk_package }}
       CI_PUBLIC_ROOT: ${{ vars.DEEPEP_CI_PUBLIC_ROOT }}
       CI_PUBLIC_OUTPUT_DIR: >-
@@ -93,18 +166,28 @@ jobs:
               "${IMAGE}" -R -- "${runner_owner}" /workspace
           fi
 
-      - name: Checkout source
+      - name: Checkout trusted controller
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
+          ref: ${{ needs.authorize.outputs.controller_ref }}
+          path: controller
+          fetch-depth: 1
+          submodules: false
+          persist-credentials: false
+
+      - name: Checkout selected source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ needs.authorize.outputs.source_ref }}
           path: source
-          fetch-depth: 0
+          fetch-depth: 2
           submodules: false
           persist-credentials: false
 
       - name: Prepare CI public root
         shell: bash
         run: >-
-          bash source/.github/scripts/hcu/ci.sh
+          bash controller/.github/scripts/hcu/ci.sh
           prepare-ci-public-root "${CI_PUBLIC_ROOT}"
 
       - name: Build and verify wheel in container
@@ -112,9 +195,9 @@ jobs:
         env:
           HYGON_AI_CI_TOKEN: ${{ secrets.HYGON_AI_CI_TOKEN }}
         run: |
-          bash source/.github/scripts/hcu/ci.sh \
-            run-ci-container source source "${IMAGE}" \
-            "${BUILD_VARIANT}" "${TORCH_VERSION}" "${DTK_PACKAGE}" build \
+          bash controller/.github/scripts/hcu/ci.sh \
+            run-ci-container controller source "${IMAGE}" \
+            "${BUILD_VARIANT}" "${TORCH_VERSION}" "${DTK_PACKAGE}" "${BUILD_MODE}" \
             source/final source/ci-logs
 
       - name: Restore workspace ownership
@@ -122,8 +205,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -f source/.github/scripts/hcu/ci.sh ]]; then
-            bash source/.github/scripts/hcu/ci.sh \
+          if [[ -f controller/.github/scripts/hcu/ci.sh ]]; then
+            bash controller/.github/scripts/hcu/ci.sh \
               restore-workspace-with-container "${GITHUB_WORKSPACE}" "${IMAGE}"
           else
             workspace="$(realpath -m -- "${GITHUB_WORKSPACE}")"
@@ -140,8 +223,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -f source/.github/scripts/hcu/ci.sh ]]; then
-            bash source/.github/scripts/hcu/ci.sh \
+          if [[ -f controller/.github/scripts/hcu/ci.sh ]]; then
+            bash controller/.github/scripts/hcu/ci.sh \
               save-ci-output source "${CI_PUBLIC_OUTPUT_DIR}"
           else
             echo "CI controller was not checked out; no output is available to save."
