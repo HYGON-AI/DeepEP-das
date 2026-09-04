@@ -391,6 +391,30 @@ PY
     printf '%s\n' "${repaired_wheels[@]}"
 }
 
+install_repaired_wheel() {
+    local wheel_dir
+    local -a repaired_wheels
+    wheel_dir="$(resolve_dir "$1")"
+
+    shopt -s nullglob
+    repaired_wheels=("${wheel_dir}"/*.whl)
+    shopt -u nullglob
+    (( ${#repaired_wheels[@]} > 0 )) || die "no repaired wheel is available for PR tests"
+
+    python3 -m pip install --no-deps --force-reinstall "${repaired_wheels[@]}"
+    (
+        cd /tmp
+        python3 - <<'PY'
+from importlib.metadata import version
+
+import deep_ep
+
+print(f"deep_ep loaded from: {deep_ep.__file__}")
+print(f"deep-ep distribution version: {version('deep-ep')}")
+PY
+    )
+}
+
 container_ci() {
     local controller_dir source_dir build_variant torch_version dtk_package mode output_dir log_dir
     controller_dir="$(resolve_dir "$1")"
@@ -403,29 +427,40 @@ container_ci() {
     log_dir="$(realpath -m -- "$8")"
 
     case "${mode}" in
-        build|pr|nightly) ;;
+        build|pr-build|pr-test|pr|nightly) ;;
         *) die "unknown container CI mode: ${mode}" ;;
     esac
     case "${output_dir}" in "${source_dir}"/*) ;; *) die "invalid output directory" ;; esac
     case "${log_dir}" in "${source_dir}"/*) ;; *) die "invalid log directory" ;; esac
 
     git config --global --add safe.directory "${source_dir}"
-    prepare_container_source "${source_dir}"
+    if [[ "${mode}" != "pr-test" ]]; then
+        prepare_container_source "${source_dir}"
+    fi
     mkdir -p -- "${log_dir}"
-    git config --global --add safe.directory "${source_dir}/${ROCSHMEM_PATH}"
     git -C "${source_dir}" rev-parse HEAD > "${log_dir}/source-sha.log"
     if [[ -n "${DEEPEP_PR_BASE_SHA:-}" || -n "${DEEPEP_PR_HEAD_SHA:-}" ]]; then
         [[ -n "${DEEPEP_PR_BASE_SHA:-}" && -n "${DEEPEP_PR_HEAD_SHA:-}" ]] || \
             die "both PR base and head SHAs are required"
         validate_pr_merge "${source_dir}" "${DEEPEP_PR_BASE_SHA}" "${DEEPEP_PR_HEAD_SHA}"
     fi
+
+    if [[ "${mode}" == "pr-test" ]]; then
+        source_dtk
+        verify_torch_runtime "${torch_version}"
+        install_repaired_wheel "${output_dir}"
+        run_pr_tests "${source_dir}" "${output_dir}" "${log_dir}"
+        return
+    fi
+
+    git config --global --add safe.directory "${source_dir}/${ROCSHMEM_PATH}"
     checkout_rocshmem "${source_dir}" 2>&1 | tee "${log_dir}/submodule.log"
     build_wheel \
         "${source_dir}" "${build_variant}" "${torch_version}" "${dtk_package}" "${output_dir}" \
         2>&1 | tee "${log_dir}/build.log"
 
     case "${mode}" in
-        build) ;;
+        build|pr-build) ;;
         pr)
             # build_wheel runs on the left side of a tee pipeline, so reload the
             # DTK runtime environment in this parent shell before HCU tests.
@@ -460,7 +495,7 @@ run_ci_container() {
     container_log="/workspace/${log_dir#"${workspace}"/}"
 
     case "${mode}" in
-        build|pr|nightly) ;;
+        build|pr-build|pr-test|pr|nightly) ;;
         *) die "unknown container CI mode: ${mode}" ;;
     esac
     mkdir -p -- "${log_dir}"
@@ -665,8 +700,8 @@ Usage:
   ci.sh validate-pr-merge <source-dir> <base-sha> <head-sha>
   ci.sh checkout-rocshmem <source-dir>
   ci.sh build-wheel <source-dir> <standard|shca> <torch-version> <dtk-package> <output-dir>
-  ci.sh container-ci <controller-dir> <source-dir> <standard|shca> <torch-version> <dtk-package> <build|pr|nightly> <output-dir> <log-dir>
-  ci.sh run-ci-container <controller-dir> <source-dir> <image> <standard|shca> <torch-version> <dtk-package> <build|pr|nightly> <output-dir> <log-dir>
+  ci.sh container-ci <controller-dir> <source-dir> <standard|shca> <torch-version> <dtk-package> <build|pr-build|pr-test|pr|nightly> <output-dir> <log-dir>
+  ci.sh run-ci-container <controller-dir> <source-dir> <image> <standard|shca> <torch-version> <dtk-package> <build|pr-build|pr-test|pr|nightly> <output-dir> <log-dir>
   ci.sh run-pr-tests <source-dir> <wheel-dir> <log-dir>
   ci.sh run-nightly-tests <source-dir> <wheel-dir> <log-dir>
   ci.sh save-ci-output <source-dir> <destination-dir>

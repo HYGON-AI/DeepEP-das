@@ -173,15 +173,23 @@ jobs:
           bash controller/.github/scripts/hcu/ci.sh
           prepare-ci-public-root "${CI_PUBLIC_ROOT}"
 
-      - name: Build and run PR checks in container
+      - name: Build and verify PR wheel in container
         shell: bash
         env:
           HYGON_AI_CI_TOKEN: ${{ secrets.HYGON_AI_CI_TOKEN }}
         run: |
           bash controller/.github/scripts/hcu/ci.sh \
             run-ci-container controller source "${IMAGE}" \
-            "${BUILD_VARIANT}" "${TORCH_VERSION}" "${DTK_PACKAGE}" pr \
-            source/final source/ci-logs
+            "${BUILD_VARIANT}" "${TORCH_VERSION}" "${DTK_PACKAGE}" pr-build \
+            source/final source/ci-logs/build
+
+      - name: Install wheel and run single-node PR tests in container
+        shell: bash
+        run: |
+          bash controller/.github/scripts/hcu/ci.sh \
+            run-ci-container controller source "${IMAGE}" \
+            "${BUILD_VARIANT}" "${TORCH_VERSION}" "${DTK_PACKAGE}" pr-test \
+            source/final source/ci-logs/tests
 
       - name: Restore workspace ownership
         if: always()
