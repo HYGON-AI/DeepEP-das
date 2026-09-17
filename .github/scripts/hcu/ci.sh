@@ -391,6 +391,44 @@ PY
     printf '%s\n' "${repaired_wheels[@]}"
 }
 
+publish_nightly_wheels() {
+    local source_dir dtk_package wheel_dir dtk_package_name
+    local -a wheels upload_args
+
+    source_dir="$(resolve_dir "$1")"
+    dtk_package="$2"
+    wheel_dir="$(resolve_dir "$3")"
+
+    [[ -n "${DEEPEP_DEVPI_PASSWORD:-}" ]] || \
+        die "DEEPEP_DEVPI_PASSWORD is required for nightly publishing"
+
+    dtk_package_name="$(basename -- "${dtk_package}")"
+
+    shopt -s nullglob
+    wheels=("${wheel_dir}"/*.whl)
+    shopt -u nullglob
+    (( ${#wheels[@]} > 0 )) || die "no repaired wheel is available to publish"
+
+    CIUpload NIGHTLY --help | grep -q -- "--record" || \
+        die "installed CIUpload does not support NIGHTLY --record"
+
+    upload_args=(
+        NIGHTLY
+        --dtk_pkg_name "${dtk_package_name}"
+        --password "${DEEPEP_DEVPI_PASSWORD}"
+        --record
+        --repo "${source_dir}"
+        -f "${wheels[@]}"
+    )
+
+    if [[ -n "${DEEPEP_DEVPI_URL:-}" ]]; then
+        upload_args+=(--devpi_url "${DEEPEP_DEVPI_URL}")
+    fi
+
+    CIUpload "${upload_args[@]}"
+    append_summary "- nightly wheels published and reported to DashHub: ${#wheels[@]}"
+}
+
 install_repaired_wheel() {
     local wheel_dir
     local -a repaired_wheels
@@ -458,6 +496,10 @@ container_ci() {
     build_wheel \
         "${source_dir}" "${build_variant}" "${torch_version}" "${dtk_package}" "${output_dir}" \
         2>&1 | tee "${log_dir}/build.log"
+    if [[ "${mode}" == "build" && "${DEEPEP_PUBLISH_NIGHTLY:-false}" == "true" ]]; then
+        publish_nightly_wheels "${source_dir}" "${dtk_package}" "${output_dir}" \
+            2>&1 | tee "${log_dir}/publish.log"
+    fi
 
     case "${mode}" in
         build|pr-build) ;;
@@ -523,6 +565,12 @@ run_ci_container() {
         --env DEEPEP_SOURCE_REF
         --env DEEPEP_PR_BASE_SHA
         --env DEEPEP_PR_HEAD_SHA
+        --env DEEPEP_PUBLISH_NIGHTLY
+        --env DEEPEP_DEVPI_URL
+        --env DEEPEP_DEVPI_PASSWORD
+        --env DASHUB_BASE
+        --env CI_TOKEN
+        --env GITHUB_TOKEN
         --entrypoint /bin/bash
     )
     if [[ "${mode}" == "build" ]]; then
