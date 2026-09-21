@@ -197,10 +197,8 @@ jobs:
         env:
           HYGON_AI_CI_TOKEN: ${{ secrets.HYGON_AI_CI_TOKEN }}
           DEEPEP_PUBLISH_NIGHTLY: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-          DEEPEP_DEVPI_URL: ${{ vars.DEEPEP_DEVPI_URL }}
-          DEEPEP_DEVPI_PASSWORD: ${{ github.event_name == 'push' && secrets.DEEPEP_DEVPI_PASSWORD || '' }}
-          DASHUB_BASE: ${{ vars.DASHUB_BASE }}
-          CI_TOKEN: ${{ github.event_name == 'push' && secrets.DASHUB_CI_TOKEN || '' }}
+          PYPI_URL: ${{ vars.PYPI_URL }}
+          PYPI_PASSWORD: ${{ github.event_name == 'push' && secrets.PYPI_PASSWORD || '' }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           bash controller/.github/scripts/hcu/ci.sh \
