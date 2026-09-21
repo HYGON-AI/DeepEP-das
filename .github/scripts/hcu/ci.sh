@@ -399,8 +399,8 @@ publish_nightly_wheels() {
     dtk_package="$2"
     wheel_dir="$(resolve_dir "$3")"
 
-    [[ -n "${DEEPEP_DEVPI_PASSWORD:-}" ]] || \
-        die "DEEPEP_DEVPI_PASSWORD is required for nightly publishing"
+    [[ -n "${PYPI_PASSWORD:-}" ]] || \
+        die "PYPI_PASSWORD is required for nightly publishing"
 
     dtk_package_name="$(basename -- "${dtk_package}")"
 
@@ -415,14 +415,14 @@ publish_nightly_wheels() {
     upload_args=(
         NIGHTLY
         --dtk_pkg_name "${dtk_package_name}"
-        --password "${DEEPEP_DEVPI_PASSWORD}"
+        --password "${PYPI_PASSWORD}"
         --record
         --repo "${source_dir}"
         -f "${wheels[@]}"
     )
 
-    if [[ -n "${DEEPEP_DEVPI_URL:-}" ]]; then
-        upload_args+=(--devpi_url "${DEEPEP_DEVPI_URL}")
+    if [[ -n "${PYPI_URL:-}" ]]; then
+        upload_args+=(--devpi_url "${PYPI_URL}")
     fi
 
     CIUpload "${upload_args[@]}"
@@ -566,10 +566,8 @@ run_ci_container() {
         --env DEEPEP_PR_BASE_SHA
         --env DEEPEP_PR_HEAD_SHA
         --env DEEPEP_PUBLISH_NIGHTLY
-        --env DEEPEP_DEVPI_URL
-        --env DEEPEP_DEVPI_PASSWORD
-        --env DASHUB_BASE
-        --env CI_TOKEN
+        --env PYPI_URL
+        --env PYPI_PASSWORD
         --env GITHUB_TOKEN
         --entrypoint /bin/bash
     )
