@@ -7,7 +7,7 @@ name: Build HCU Wheels
 on:
   push:
     branches:
-      - ci-release
+      - main
   pull_request_target:
     branches:
       - main
@@ -196,7 +196,7 @@ jobs:
         shell: bash
         env:
           HYGON_AI_CI_TOKEN: ${{ secrets.HYGON_AI_CI_TOKEN }}
-          DEEPEP_PUBLISH_NIGHTLY: ${{ github.event_name == 'push' && github.ref == 'refs/heads/ci-release' }}
+          DEEPEP_PUBLISH_NIGHTLY: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
           DEEPEP_DEVPI_URL: ${{ vars.DEEPEP_DEVPI_URL }}
           DEEPEP_DEVPI_PASSWORD: ${{ github.event_name == 'push' && secrets.DEEPEP_DEVPI_PASSWORD || '' }}
           DASHUB_BASE: ${{ vars.DASHUB_BASE }}
