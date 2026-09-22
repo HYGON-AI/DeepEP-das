@@ -196,9 +196,11 @@ jobs:
         shell: bash
         env:
           HYGON_AI_CI_TOKEN: ${{ secrets.HYGON_AI_CI_TOKEN }}
-          DEEPEP_PUBLISH_NIGHTLY: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-          PYPI_URL: ${{ vars.PYPI_URL }}
-          PYPI_PASSWORD: ${{ github.event_name == 'push' && secrets.PYPI_PASSWORD || '' }}
+          # GitHub CI only builds and verifies wheels. Package publishing and
+          # DashHub reporting remain disabled while GitLab is authoritative.
+          DEEPEP_PUBLISH_NIGHTLY: "false"
+          # PYPI_URL: ${{ vars.PYPI_URL }}
+          # PYPI_PASSWORD: ${{ github.event_name == 'push' && secrets.PYPI_PASSWORD || '' }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           bash controller/.github/scripts/hcu/ci.sh \
